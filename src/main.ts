@@ -46,6 +46,7 @@ const sendWorld = (prefix: string = "observation_space") => {
 };
 
 const sendReward = (reward: number, prefix: string = "reward") => {
+    console.warn("about to send this reward: " + reward)
     if (websocket.readyState === WebSocket.OPEN) {
         websocket.send(prefix + reward);
     }
@@ -57,10 +58,9 @@ websocket.addEventListener("open", () => {
     websocket.send("pingfromfontend");
 });
 
-websocket.addEventListener("message", (event: MessageEvent) => {
-    console.log("received this message:", event.data);
-    
-    const msgStr = event.data.toString();
+websocket.addEventListener("message", async (event: MessageEvent) => {
+    const msgStr = event.data instanceof Blob ? await event.data.text() : String(event.data);
+    console.log("received this message:", msgStr);
     
     // Handle reset command
     if (msgStr === "reset") {
@@ -73,6 +73,7 @@ websocket.addEventListener("message", (event: MessageEvent) => {
     if (msgStr.startsWith(actionPrefix)) {
         const actionValue = msgStr.slice(actionPrefix.length);
         const parsedAction = Number(actionValue);
+        console.log("received this action value: " + parsedAction);
 
         if (Number.isInteger(parsedAction) && [0, 1, 2, 3].includes(parsedAction)) {
             dir = parsedAction;
@@ -197,11 +198,13 @@ const main = async (
     renderWorldMap(headColor, bodyColor, powerUpColor);
     canvas_obj.putImageData(imageData, 0, 0);
     
-    // Send initial state
-    sendWorld();
-    sendReward(0);
-    
     await sleep(msBetweenFrames);
+    
+    // Send initial state AFTER rendering
+    sendReward(0);
+    sendWorld();
+    
+    console.log("Sent initial state, waiting for first action...");
 
     while (blockExecution) {
         await sleep(10);
@@ -216,15 +219,16 @@ const main = async (
         
         let [newX, newY] = modCoordToDir(head.x, head.y, dir);
 
+        // Check for power-up
         if (newX === PowerUpX && newY === PowerUpY) {
-            reward = 10;
+            reward += 10;
             atePowerUp = true;
             newPowerUp();
         }
 
-        // Boundary check
+        // Boundary check - game over
         if (newX < 0 || newX >= blocks_row || newY < 0 || newY >= blocks_row) {
-            reward = -10;
+            reward += -1000;
             sendReward(reward);
             sendWorld();
             console.log("Game over: hit wall at", newX, newY);
@@ -232,16 +236,25 @@ const main = async (
             break;
         }
 
-        // Body collision check
+        // Body collision check - penalize but don't end game
         if (worldMap[newY][newX] === 1) {
-            reward = -10;
-            sendReward(reward);
-            sendWorld();
-            console.log("Game over: hit body at", newX, newY);
-            lostGame = true;
-            break;
+            reward += -0.1;
+            console.log("Body collision detected at", newX, newY, "- reverting to old direction");
+            
+            // Revert to old direction and recalculate position
+            dir = oldDir;
+            [newX, newY] = modCoordToDir(head.x, head.y, dir);
+            
+            // If reverting still causes collision, we're stuck - end game
+            if (newX < 0 || newX >= blocks_row || newY < 0 || newY >= blocks_row || worldMap[newY][newX] === 1) {
+                reward += -10;
+                console.log("Game over: stuck after body collision");
+                lostGame = false;
+
+            }
         }
 
+        // Update world map and snake
         worldMap[head.y][head.x] = 1;
         snake.unshift({ x: newX, y: newY });
         worldMap[newY][newX] = 2;
@@ -249,8 +262,14 @@ const main = async (
         if (!atePowerUp) {
             const tail = snake.pop()!;
             worldMap[tail.y][tail.x] = 0;
+
+            //incentivize going to the powerUp
+            reward += 10/( (PowerUpX - head.x + PowerUpY - head.y)**2 )
         }
 
+
+
+        // Send reward and observation once per step
         sendReward(reward);
         sendWorld();
 
