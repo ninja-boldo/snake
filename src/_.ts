@@ -1,17 +1,34 @@
+export {}; 
+
 const canvas = document.getElementById("gameCanvas") as HTMLCanvasElement;
 const canvas_obj = canvas.getContext("2d");
 
-const websocket = new WebSocket("ws://localhost:3030");
-let action = 0;
-let reward = 0;
-let blockExecution = true;
-let lostGame = false;
+let dir: number = 1
+let oldDir: number = 1
+let PowerUpX: number, PowerUpY: number
 
-const actionPrefix = "action";
-
-let dir: number = 1;
-let oldDir: number = 1;
-let PowerUpX: number, PowerUpY: number;
+document.addEventListener('keydown', function(event) {
+    if(event.key === "ArrowUp"){
+        console.log("pressed up")
+        oldDir = dir
+        dir = 0
+    }
+    else if(event.key === "ArrowRight"){
+        console.log("pressed right")
+        oldDir = dir
+        dir = 1
+    }
+    else if(event.key === "ArrowDown"){
+        console.log("pressed down")
+        oldDir = dir
+        dir = 2
+    }
+    else if(event.key === "ArrowLeft"){
+        console.log("pressed left")
+        oldDir = dir
+        dir = 3
+    }    
+});
 
 if (!canvas_obj) {
     throw new Error("Could not get 2D context from canvas");
@@ -26,7 +43,7 @@ const height = canvas.height;
 const blocks_row = 20;
 const block_dim = Math.floor(width / blocks_row);
 
-const worldMap: number[][] = [];
+const worldMap: number[][] = []; // worldMap[y][x] (row, col)
 
 for (let y = 0; y < blocks_row; y++) {
     const row: number[] = [];
@@ -39,58 +56,6 @@ for (let y = 0; y < blocks_row; y++) {
 const imageData = canvas_obj.createImageData(width, height);
 const pixels = imageData.data;
 
-const sendWorld = (prefix: string = "observation_space") => {
-    if (websocket.readyState === WebSocket.OPEN) {
-        websocket.send(prefix + JSON.stringify(worldMap));
-    }
-};
-
-const sendReward = (reward: number, prefix: string = "reward") => {
-    if (websocket.readyState === WebSocket.OPEN) {
-        websocket.send(prefix + reward);
-    }
-};
-
-// Wait for WebSocket to open before starting
-websocket.addEventListener("open", () => {
-    console.log("WebSocket connected");
-    websocket.send("pingfromfontend");
-});
-
-websocket.addEventListener("message", (event: MessageEvent) => {
-    console.log("received this message:", event.data);
-    
-    const msgStr = event.data.toString();
-    
-    // Handle reset command
-    if (msgStr === "reset") {
-        console.log("Received reset command");
-        location.reload();
-        return;
-    }
-    
-    // Handle action commands
-    if (msgStr.startsWith(actionPrefix)) {
-        const actionValue = msgStr.slice(actionPrefix.length);
-        const parsedAction = Number(actionValue);
-
-        if (Number.isInteger(parsedAction) && [0, 1, 2, 3].includes(parsedAction)) {
-            dir = parsedAction;
-            blockExecution = false;
-        } else {
-            console.error("Invalid action received:", actionValue);
-        }
-    }
-});
-
-websocket.addEventListener("error", (error) => {
-    console.error("WebSocket error:", error);
-});
-
-websocket.addEventListener("close", () => {
-    console.log("WebSocket connection closed");
-});
-
 function setPixel(x: number, y: number, r: number, g: number, b: number, a: number = 255) {
     const xi = Math.floor(x);
     const yi = Math.floor(y);
@@ -102,8 +67,7 @@ function setPixel(x: number, y: number, r: number, g: number, b: number, a: numb
     pixels[index + 3] = a;
 }
 
-const setPixelCustomColor = (x: number, y: number, color: number[]) => 
-    setPixel(x, y, color[0], color[1], color[2]);
+const setPixelCustomColor = (x: number, y: number, color: number[]) => setPixel(x, y, color[0], color[1], color[2]);
 
 function setBlockCustom(blockX: number, blockY: number, color: number[]) {
     const startX = blockX * block_dim;
@@ -129,6 +93,7 @@ function sleep(ms: number) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// convert a logical (x,y) block coord by direction (0 up, 1 right, 2 down, 3 left)
 const modCoordToDir = (x: number, y: number, dir: number): [number, number] => {
     if (dir === 0) return [x, y - 1];
     if (dir === 1) return [x + 1, y];
@@ -137,16 +102,20 @@ const modCoordToDir = (x: number, y: number, dir: number): [number, number] => {
     throw new Error("invalid dir");
 };
 
+// Render worldMap where 3=PowerUp, 2=head, 1=body
 const renderWorldMap = (headColor: number[], bodyColor: number[], powerUpColor: number[]) => {
+    // Clear pixel buffer to black
     setWholeCanvas([0, 0, 0]);
 
     for (let y = 0; y < blocks_row; y++) {
         for (let x = 0; x < blocks_row; x++) {
             if (worldMap[y][x] === 3) {
                 setBlockCustom(x, y, powerUpColor);
-            } else if (worldMap[y][x] === 2) {
+            }
+            else if(worldMap[y][x] === 2){
                 setBlockCustom(x, y, headColor);
-            } else if (worldMap[y][x] === 1) {
+            }
+            else if (worldMap[y][x] === 1) {
                 setBlockCustom(x, y, bodyColor);
             }
         }
@@ -157,14 +126,14 @@ const newPowerUp = () => {
     let randRow = Math.round(Math.random() * (blocks_row - 1));
     let randCol = Math.round(Math.random() * (blocks_row - 1));
 
-    while (worldMap[randCol][randRow] !== 0) {
+    while(worldMap[randCol][randRow] != 0){
         randRow = Math.round(Math.random() * (blocks_row - 1));
         randCol = Math.round(Math.random() * (blocks_row - 1));
     }
-    worldMap[randCol][randRow] = 3;
-    PowerUpX = randRow;
-    PowerUpY = randCol;
-};
+    worldMap[randCol][randRow] = 3
+    PowerUpX = randRow
+    PowerUpY = randCol
+}
 
 interface Point { x: number; y: number; }
 
@@ -176,15 +145,20 @@ const main = async (
     distToBorder: number = 4,
     msBetweenFrames: number = 200
 ) => {
+
+    // random starting position within borders
     const randX = Math.floor(Math.random() * (blocks_row - 2 * distToBorder)) + distToBorder;
     const randY = Math.floor(Math.random() * (blocks_row - 2 * distToBorder)) + distToBorder;
-    newPowerUp();
+    newPowerUp()
 
+    // Build ordered snake array with head at index 0.
+    // If dir === 1 (right), body should be left of the head.
     const snake: Point[] = [];
     for (let i = 0; i < startBlockCount; i++) {
-        snake.push({ x: randX - i, y: randY });
+        snake.push({ x: randX - i, y: randY }); // head at index 0
     }
 
+    // fill worldMap with snake
     for (let i = 0; i < snake.length; i++) {
         const p = snake[i];
         if (p.x < 0 || p.x >= blocks_row || p.y < 0 || p.y >= blocks_row) {
@@ -194,110 +168,59 @@ const main = async (
         worldMap[p.y][p.x] = (i === 0) ? 2 : 1;
     }
 
+    // initial render
     renderWorldMap(headColor, bodyColor, powerUpColor);
     canvas_obj.putImageData(imageData, 0, 0);
-    
-    // Send initial state
-    sendWorld();
-    sendReward(0);
-    
     await sleep(msBetweenFrames);
 
-    while (blockExecution) {
-        await sleep(10);
-    }
-
+    // simple loop: move with fixed direction; stops on collision/border
     while (true) {
-        reward = 0.01;
-        let atePowerUp = false;
+        let atePowerUp = false
         const head = snake[0];
-        
-        oldDir = dir;
-        
         let [newX, newY] = modCoordToDir(head.x, head.y, dir);
 
-        if (newX === PowerUpX && newY === PowerUpY) {
-            reward = 10;
-            atePowerUp = true;
-            newPowerUp();
+        if (newX == PowerUpX && newY == PowerUpY){
+            atePowerUp = true
+            newPowerUp()
         }
-
-        // Boundary check
+        // boundary / collision check
         if (newX < 0 || newX >= blocks_row || newY < 0 || newY >= blocks_row) {
-            reward = -10;
-            sendReward(reward);
-            sendWorld();
             console.log("Game over: hit wall at", newX, newY);
-            lostGame = true;
             break;
         }
-
-        // Body collision check
         if (worldMap[newY][newX] === 1) {
-            reward = -10;
-            sendReward(reward);
-            sendWorld();
-            console.log("Game over: hit body at", newX, newY);
-            lostGame = true;
-            break;
+            console.log("hit body at", newX, newY);
+            dir = oldDir;
+            [newX, newY] = modCoordToDir(head.x, head.y, dir);
         }
 
         worldMap[head.y][head.x] = 1;
+
         snake.unshift({ x: newX, y: newY });
         worldMap[newY][newX] = 2;
 
-        if (!atePowerUp) {
+        //remove tail if no PowerUp was eatten
+        if(!atePowerUp){
             const tail = snake.pop()!;
             worldMap[tail.y][tail.x] = 0;
         }
 
-        sendReward(reward);
-        sendWorld();
-
+        // render and wait
         renderWorldMap(headColor, bodyColor, powerUpColor);
         canvas_obj.putImageData(imageData, 0, 0);
 
         await sleep(msBetweenFrames);
-        
-        blockExecution = true;
-        while (blockExecution) {
-            await sleep(10);
-        }
     }
 
+    // final render so you can see the final state
     renderWorldMap(headColor, bodyColor, powerUpColor);
     canvas_obj.putImageData(imageData, 0, 0);
-    
-    await sleep(1000);
-    console.log("Restarting game...");
-
-    for (let y = 0; y < blocks_row; y++) {
-        for (let x = 0; x < blocks_row; x++) {
-            worldMap[y][x] = 0;
-        }
-    }
-
-    dir = 1;
-    oldDir = 1;
-    blockExecution = true;
-    lostGame = false;
-    
-    await main(startBlockCount, headColor, bodyColor, powerUpColor, distToBorder, msBetweenFrames);
 };
 
-// Wait for WebSocket to be ready before starting the game
-const waitForWebSocket = async () => {
-    while (websocket.readyState !== WebSocket.OPEN) {
-        await sleep(100);
-    }
-};
+const frameDelay = 200
+const startBlocks = 3
+const snakeColor = [50, 200, 120]
+const powerUpColor = [255, 200, 120]
+const distToBorder = 4
 
-const frameDelay = 20;
-const startBlocks = 3;
-const snakeColor = [50, 200, 120];
-const powerUpColor = [255, 200, 120];
-const distToBorder = 4;
-
-waitForWebSocket().then(() => {
-    main(startBlocks, snakeColor, snakeColor, powerUpColor, distToBorder, frameDelay);
-});
+main(startBlocks, snakeColor,snakeColor, powerUpColor, distToBorder, frameDelay);
