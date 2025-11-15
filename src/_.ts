@@ -8,22 +8,22 @@ let oldDir: number = 1
 let PowerUpX: number, PowerUpY: number
 
 document.addEventListener('keydown', function(event) {
-    if(event.key === "ArrowUp"){
+    if(event.key === "ArrowUp" || event.key === "w"){
         console.log("pressed up")
         oldDir = dir
         dir = 0
     }
-    else if(event.key === "ArrowRight"){
+    else if(event.key === "ArrowRight" || event.key === "d"){
         console.log("pressed right")
         oldDir = dir
         dir = 1
     }
-    else if(event.key === "ArrowDown"){
+    else if(event.key === "ArrowDown" || event.key === "s"){
         console.log("pressed down")
         oldDir = dir
         dir = 2
     }
-    else if(event.key === "ArrowLeft"){
+    else if(event.key === "ArrowLeft" || event.key === "a"){
         console.log("pressed left")
         oldDir = dir
         dir = 3
@@ -190,8 +190,10 @@ const main = async (
         }
         if (worldMap[newY][newX] === 1) {
             console.log("hit body at", newX, newY);
-            dir = oldDir;
-            [newX, newY] = modCoordToDir(head.x, head.y, dir);
+            break
+
+            //dir = oldDir;
+            //[newX, newY] = modCoordToDir(head.x, head.y, dir);
         }
 
         worldMap[head.y][head.x] = 1;
@@ -217,10 +219,10 @@ const main = async (
     canvas_obj.putImageData(imageData, 0, 0);
 };
 
-const frameDelay = 200
-const startBlocks = 3
+const frameDelay = 80
+const startBlocks = 6
 const snakeColor = [50, 200, 120]
 const powerUpColor = [255, 200, 120]
-const distToBorder = 4
+const distToBorder = 2
 
 main(startBlocks, snakeColor,snakeColor, powerUpColor, distToBorder, frameDelay);
