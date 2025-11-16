@@ -6,7 +6,7 @@ import json
 import time
 
 
-class CustomEnv(gym.Env):
+class SnakeEnv(gym.Env):
     """Custom Snake Environment that follows gym interface."""
     
     metadata = {"render_modes": ["human"], "render_fps": 30}

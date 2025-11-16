@@ -41,18 +41,18 @@ class TestWorldMapIndexing(unittest.TestCase):
     
     def test_sync_list_with_map_indexing(self):
         """Test syncListWithMap uses correct indexing"""
-        from snake_engine import bodyElements, BodyElement, syncListWithMap, worldMap
+        import snake_engine
         
         # Manually add body element
-        bodyElements.append(BodyElement(x=4, y=6, isHead=True))
-        bodyElements.append(BodyElement(x=3, y=6, isHead=False))
+        snake_engine.bodyElements.append(snake_engine.BodyElement(x=4, y=6, isHead=True))
+        snake_engine.bodyElements.append(snake_engine.BodyElement(x=3, y=6, isHead=False))
         
-        syncListWithMap()
+        snake_engine.syncListWithMap()
         
         # Check head at [y][x] = [6][4]
-        self.assertEqual(worldMap[6][4], 2)
+        self.assertEqual(snake_engine.worldMap[6][4], 2)
         # Check body at [y][x] = [6][3]
-        self.assertEqual(worldMap[6][3], 1)
+        self.assertEqual(snake_engine.worldMap[6][3], 1)
     
     def test_coordinate_consistency(self):
         """Test that x,y coordinates map consistently across functions"""
@@ -75,179 +75,197 @@ class TestBoundaryConditions(unittest.TestCase):
     
     def setUp(self):
         """Reset state"""
-        global dimensions, worldMap, bodyElements, powerUps
-        dimensions = 10
-        worldMap = np.zeros((dimensions, dimensions))
-        bodyElements = []
-        powerUps = []
+        import snake_engine
+        snake_engine.dimensions = 10
+        snake_engine.worldMap = np.zeros((10, 10))
+        snake_engine.bodyElements = []
+        snake_engine.powerUps = []
     
     def test_collision_with_border_top(self):
         """Test collision detection at top border"""
-        from snake_engine import bodyElements, BodyElement, collisionWithBorder
+        import snake_engine
+        
+        # Clear any existing elements
+        snake_engine.bodyElements = []
         
         # Place head at top edge
-        bodyElements.append(BodyElement(x=5, y=0, isHead=True))
+        snake_engine.bodyElements.append(snake_engine.BodyElement(x=5, y=0, isHead=True))
         
-        # Moving up (dir=0) should collide
-        self.assertTrue(collisionWithBorder(dir=0))
+        # Moving up (dir=0) should collide (y-1 = -1, out of bounds)
+        self.assertTrue(snake_engine.collisionWithBorder(dir=0))
         
         # Moving right (dir=1) should not collide
-        self.assertFalse(collisionWithBorder(dir=1))
+        self.assertFalse(snake_engine.collisionWithBorder(dir=1))
     
     def test_collision_with_border_right(self):
         """Test collision at right border"""
-        from snake_engine import bodyElements, BodyElement, collisionWithBorder, dimensions
+        import snake_engine
+        
+        # Clear any existing elements
+        snake_engine.bodyElements = []
         
         # Place at right edge
-        bodyElements.append(BodyElement(x=dimensions-1, y=5, isHead=True))
+        snake_engine.bodyElements.append(snake_engine.BodyElement(x=snake_engine.dimensions-1, y=5, isHead=True))
         
-        # Moving right should collide
-        self.assertTrue(collisionWithBorder(dir=1))
+        # Moving right should collide (x+1 = 10, out of bounds for 0-9)
+        self.assertTrue(snake_engine.collisionWithBorder(dir=1))
     
     def test_collision_with_border_bounds_bug(self):
-        """Test the off-by-one bug in collisionWithBorder"""
-        from snake_engine import bodyElements, BodyElement, collisionWithBorder, dimensions
+        """Test boundary checking works correctly"""
+        import snake_engine
         
-        # The current code checks (0 <= newX < dimensions -1)
-        # This means x=dimensions-1 is considered out of bounds!
-        # This is a BUG - should be (0 <= newX < dimensions)
+        # Place at second-to-last column
+        snake_engine.bodyElements.append(snake_engine.BodyElement(x=snake_engine.dimensions-2, y=5, isHead=True))
         
-        bodyElements.append(BodyElement(x=dimensions-2, y=5, isHead=True))
-        
-        # Moving right to x=dimensions-1 should be VALID but code treats as collision
-        result = collisionWithBorder(dir=1)
-        # Current buggy behavior: returns True
-        # Expected behavior: should return False
-        self.assertTrue(result)  # Documents the bug
+        # Moving right to x=dimensions-1 should be VALID (not a collision)
+        result = snake_engine.collisionWithBorder(dir=1)
+        self.assertFalse(result)  # Should be False since dimensions-1 is valid
     
     def test_collision_with_body_self(self):
         """Test collision with snake's own body"""
-        from snake_engine import bodyElements, BodyElement, syncListWithMap, collisionWithBody
+        import snake_engine
         
         # Create snake that will collide with itself
-        bodyElements.append(BodyElement(x=5, y=5, isHead=True))
-        bodyElements.append(BodyElement(x=5, y=6, isHead=False))
-        bodyElements.append(BodyElement(x=6, y=6, isHead=False))
-        bodyElements.append(BodyElement(x=6, y=5, isHead=False))
+        snake_engine.bodyElements.append(snake_engine.BodyElement(x=5, y=5, isHead=True))
+        snake_engine.bodyElements.append(snake_engine.BodyElement(x=5, y=6, isHead=False))
+        snake_engine.bodyElements.append(snake_engine.BodyElement(x=6, y=6, isHead=False))
+        snake_engine.bodyElements.append(snake_engine.BodyElement(x=6, y=5, isHead=False))
         
-        syncListWithMap()
+        snake_engine.syncListWithMap()
         
         # Moving right (dir=1) would hit body at x=6,y=5
-        self.assertTrue(collisionWithBody(dir=1))
+        self.assertTrue(snake_engine.collisionWithBody(dir=1))
     
     def test_collision_with_powerup_allowed(self):
         """Test that moving into powerup is allowed"""
-        from snake_engine import bodyElements, BodyElement, addBlock, collisionWithBody
+        import snake_engine
         
-        bodyElements.append(BodyElement(x=5, y=5, isHead=True))
-        addBlock(x=6, y=5, elementType=3)  # PowerUp to the right
+        snake_engine.bodyElements.append(snake_engine.BodyElement(x=5, y=5, isHead=True))
+        snake_engine.addBlock(x=6, y=5, elementType=3)  # PowerUp to the right
         
         # Moving into powerup should NOT be a collision
-        self.assertFalse(collisionWithBody(dir=1))
+        self.assertFalse(snake_engine.collisionWithBody(dir=1))
 
 
 class TestGameLogic(unittest.TestCase):
     """Test core game mechanics"""
     
     def setUp(self):
-        global dimensions, worldMap, bodyElements, powerUps, dir, atePowerUp
-        dimensions = 10
-        worldMap = np.zeros((dimensions, dimensions))
-        bodyElements = []
-        powerUps = []
-        dir = 1
-        atePowerUp = False
+        import snake_engine
+        snake_engine.dimensions = 10
+        snake_engine.worldMap = np.zeros((10, 10))
+        snake_engine.bodyElements = []
+        snake_engine.powerUps = []
+        snake_engine.dir = 1
+        snake_engine.atePowerUp = False
+        snake_engine.startBlocks = 3
     
     def test_spawn_body_placement(self):
         """Test that spawning creates body correctly"""
-        from snake_engine import spawnBody, bodyElements, worldMap, startBlocks
+        import snake_engine
         
-        with patch('snake_engine.random.randrange') as mock_rand:
+        # Clear any existing body elements first
+        snake_engine.bodyElements = []
+        
+        with patch('random.randrange') as mock_rand:
             mock_rand.return_value = 5
-            spawnBody()
+            snake_engine.spawnBody()
         
         # Should have startBlocks elements
-        self.assertEqual(len(bodyElements), startBlocks)
+        self.assertEqual(len(snake_engine.bodyElements), snake_engine.startBlocks)
         
         # First element should be head
-        self.assertTrue(bodyElements[0].isHead)
+        self.assertTrue(snake_engine.bodyElements[0].isHead)
         
         # Check worldMap has head (value 2) and body (value 1)
-        head = bodyElements[0]
-        self.assertEqual(worldMap[head.y][head.x], 2)
+        head = snake_engine.bodyElements[0]
+        self.assertEqual(snake_engine.worldMap[head.y][head.x], 2)
     
     def test_spawn_powerup_bounds_bug(self):
-        """Test the hardcoded bounds bug in spawnPowerUp"""
-        from snake_engine import spawnPowerUp, dimensions
+        """Test that spawnPowerUp uses correct dimensions"""
+        import snake_engine
         
-        # Current code uses random.randint(0, 19) regardless of dimensions
-        # With dimensions=10, this will cause IndexError!
-        
-        with self.assertRaises(IndexError):
-            with patch('snake_engine.random.randint') as mock_rand:
-                mock_rand.return_value = 15  # Out of bounds for 10x10
-                spawnPowerUp()
+        # Should not raise IndexError with dimensions=10
+        # Multiple attempts to ensure we don't get lucky with random
+        for _ in range(10):
+            snake_engine.powerUps = []  # Clear between attempts
+            snake_engine.wipeWorldMapInplace()
+            try:
+                snake_engine.spawnPowerUp()
+                # Verify powerup is within bounds
+                if snake_engine.powerUps:
+                    pu = snake_engine.powerUps[-1]
+                    self.assertLess(pu.x, snake_engine.dimensions)
+                    self.assertLess(pu.y, snake_engine.dimensions)
+            except IndexError:
+                self.fail("spawnPowerUp raised IndexError with dimensions=10")
     
     def test_gen_new_coord_directions(self):
         """Test coordinate generation for all directions"""
-        from snake_engine import genNewCoord
+        import snake_engine
         
         x, y = 5, 5
         
         # Up (0): y-1
-        new_x, new_y = genNewCoord(x, y, 0)
+        new_x, new_y = snake_engine.genNewCoord(x, y, 0)
         self.assertEqual((new_x, new_y), (5, 4))
         
         # Right (1): x+1
-        new_x, new_y = genNewCoord(x, y, 1)
+        new_x, new_y = snake_engine.genNewCoord(x, y, 1)
         self.assertEqual((new_x, new_y), (6, 5))
         
         # Down (2): y+1
-        new_x, new_y = genNewCoord(x, y, 2)
+        new_x, new_y = snake_engine.genNewCoord(x, y, 2)
         self.assertEqual((new_x, new_y), (5, 6))
         
         # Left (3): x-1
-        new_x, new_y = genNewCoord(x, y, 3)
+        new_x, new_y = snake_engine.genNewCoord(x, y, 3)
         self.assertEqual((new_x, new_y), (4, 5))
     
     def test_move_snake_basic(self):
         """Test basic snake movement"""
-        from snake_engine import bodyElements, BodyElement, moveSnake, syncListWithMap
+        import snake_engine
         
         # Create simple 2-element snake
-        bodyElements.append(BodyElement(x=5, y=5, isHead=True))
-        bodyElements.append(BodyElement(x=4, y=5, isHead=False))
-        syncListWithMap()
+        snake_engine.bodyElements.append(snake_engine.BodyElement(x=5, y=5, isHead=True))
+        snake_engine.bodyElements.append(snake_engine.BodyElement(x=4, y=5, isHead=False))
+        snake_engine.syncListWithMap()
         
         # Move right (dir=1)
-        moveSnake(dir=1)
+        snake_engine.moveSnake(dir=1)
         
-        # Head should now be at x=6, y=5
-        head = bodyElements[0]
-        self.assertEqual(head.x, 6)
+        # Head should now be at x=6, y=5 (moved right)
+        head = snake_engine.bodyElements[0]
+        self.assertEqual(head.x, 6)  # ✅ Correct behavior - head moves!
         self.assertEqual(head.y, 5)
         
         # Body should be at old head position
-        body = bodyElements[1]
+        body = snake_engine.bodyElements[1]
         self.assertEqual(body.x, 5)
         self.assertEqual(body.y, 5)
     
     def test_move_snake_eats_powerup(self):
         """Test snake grows when eating powerup"""
-        from snake_engine import bodyElements, BodyElement, addBlock, moveSnake, atePowerUp
+        import snake_engine
+        
+        # Clear existing state
+        snake_engine.bodyElements = []
+        snake_engine.powerUps = []
+        snake_engine.wipeWorldMapInplace()
         
         # Snake at x=5, body at x=4
-        bodyElements.append(BodyElement(x=5, y=5, isHead=True))
-        bodyElements.append(BodyElement(x=4, y=5, isHead=False))
+        snake_engine.bodyElements.append(snake_engine.BodyElement(x=5, y=5, isHead=True))
+        snake_engine.bodyElements.append(snake_engine.BodyElement(x=4, y=5, isHead=False))
+        snake_engine.syncListWithMap()
         
         # PowerUp at x=6 (where head will move)
-        addBlock(x=6, y=5, elementType=3)
+        snake_engine.addBlock(x=6, y=5, elementType=3)
         
-        initial_length = len(bodyElements)
-        moveSnake(dir=1)
+        initial_length = len(snake_engine.bodyElements)
+        snake_engine.moveSnake(dir=1)
         
-        # Snake should have grown
-        self.assertGreater(len(bodyElements), initial_length)
+        # Snake should have grown by 1
+        self.assertEqual(len(snake_engine.bodyElements), initial_length + 1)
 
 
 class TestWorldMapStates(unittest.TestCase):
@@ -255,45 +273,46 @@ class TestWorldMapStates(unittest.TestCase):
     
     def test_wipe_world_map_inplace(self):
         """Test wiping worldMap in place"""
-        from snake_engine import worldMap, wipeWorldMap
+        import snake_engine
         
-        worldMap[5][5] = 2
-        wipeWorldMap(inplace=True)
+        snake_engine.worldMap[5][5] = 2
+        snake_engine.wipeWorldMapInplace()
         
-        self.assertEqual(worldMap[5][5], 0)
-        self.assertTrue(np.all(worldMap == 0))
+        self.assertEqual(snake_engine.worldMap[5][5], 0)
+        self.assertTrue(np.all(snake_engine.worldMap == 0))
     
     def test_wipe_world_map_return(self):
         """Test wiping worldMap returns new array"""
-        from snake_engine import worldMap, wipeWorldMap
+        import snake_engine
         
-        worldMap[5][5] = 2
-        new_map = wipeWorldMap(inplace=False)
+        snake_engine.worldMap[5][5] = 2
+        new_map = snake_engine.wipeWorldMap()
         
         # Original should be unchanged
-        self.assertEqual(worldMap[5][5], 2)
+        self.assertEqual(snake_engine.worldMap[5][5], 2)
         # New should be zeros
         self.assertTrue(np.all(new_map == 0))
     
     def test_world_map_values(self):
         """Test worldMap uses correct values for different elements"""
-        from snake_engine import addBlock, worldMap
+        import snake_engine
         
         # 0 = void/empty
-        addBlock(x=1, y=1, elementType=0)
-        self.assertEqual(worldMap[1][1], 0)
+        snake_engine.addBlock(x=1, y=1, elementType=0)
+        self.assertEqual(snake_engine.worldMap[1][1], 0)
         
-        # 1 = body
-        addBlock(x=2, y=2, elementType=1)
-        self.assertEqual(worldMap[2][2], 1)
+        # 1 = body (requires head to exist first)
+        snake_engine.bodyElements = []  # Clear first
+        snake_engine.addBlock(x=3, y=3, elementType=2)  # Add head first
+        snake_engine.addBlock(x=2, y=2, elementType=1)  # Then body
+        self.assertEqual(snake_engine.worldMap[2][2], 1)
         
         # 2 = head
-        addBlock(x=3, y=3, elementType=2)
-        self.assertEqual(worldMap[3][3], 2)
+        self.assertEqual(snake_engine.worldMap[3][3], 2)
         
         # 3 = powerup
-        addBlock(x=4, y=4, elementType=3)
-        self.assertEqual(worldMap[4][4], 3)
+        snake_engine.addBlock(x=4, y=4, elementType=3)
+        self.assertEqual(snake_engine.worldMap[4][4], 3)
 
 
 if __name__ == '__main__':
