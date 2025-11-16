@@ -11,20 +11,38 @@ import os
 # Import the fixed Gymnasium environment
 from env_local import SnakeEnv
 
+# Performance optimizations for PyTorch
+# Set optimal number of threads for CPU (use all available cores)
+import multiprocessing
+num_threads = multiprocessing.cpu_count()
+torch.set_num_threads(num_threads)
+torch.set_num_interop_threads(num_threads)
+
+# Enable cuDNN benchmarking for faster training when using CUDA
+if torch.cuda.is_available():
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.enabled = True
+    # Use TF32 for faster matrix multiplications on Ampere GPUs
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+
+print(f"✓ PyTorch configured with {num_threads} CPU threads")
+
 
 class DQNetwork(nn.Module):
     """Deep Q-Network with improved architecture"""
     def __init__(self, input_size, output_size, hidden_size=256):
         super(DQNetwork, self).__init__()
+        # Using inplace operations for ReLU to save memory
         self.network = nn.Sequential(
             nn.Linear(input_size, hidden_size),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
             nn.Dropout(0.1),  # Prevent overfitting
             nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
             nn.Dropout(0.1),
             nn.Linear(hidden_size, 128),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
             nn.Linear(128, output_size)
         )
         
@@ -43,7 +61,7 @@ class DQNetwork(nn.Module):
 class DQNAgent:
     """Deep Q-Network agent with target network and prioritized experience replay"""
     def __init__(self, state_size, action_size, learning_rate=0.0005, 
-                 gamma=0.99, use_target_network=True):
+                 gamma=0.99, use_target_network=True, device=None):
         self.state_size = state_size
         self.action_size = action_size
         self.memory = deque(maxlen=10000)  # Increased memory
@@ -56,16 +74,44 @@ class DQNAgent:
         self.update_target_every = 100  # Update target network every N steps
         self.step_count = 0
         
+        # Automatically detect device (GPU if available, else CPU)
+        if device is None:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            self.device = device
+        
+        print(f"✓ Using device: {self.device}")
+        
         # Q-Network
-        self.model = DQNetwork(state_size, action_size)
+        self.model = DQNetwork(state_size, action_size).to(self.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
         self.criterion = nn.SmoothL1Loss()  # Huber loss - more stable than MSE
         
         # Target network (for stable training)
         if use_target_network:
-            self.target_model = DQNetwork(state_size, action_size)
+            self.target_model = DQNetwork(state_size, action_size).to(self.device)
             self.update_target_network()
         
+        # Enable optimizations
+        self._enable_optimizations()
+        
+    def _enable_optimizations(self):
+        """Enable PyTorch optimizations for better performance"""
+        # Set models to training mode by default
+        self.model.train()
+        if self.use_target_network:
+            self.target_model.eval()  # Target network is always in eval mode
+        
+        # Try to compile the model for faster inference (PyTorch 2.0+)
+        if hasattr(torch, 'compile') and torch.cuda.is_available():
+            try:
+                self.model = torch.compile(self.model, mode='max-autotune')
+                if self.use_target_network:
+                    self.target_model = torch.compile(self.target_model, mode='max-autotune')
+                print("✓ PyTorch compile enabled (faster inference)")
+            except Exception as e:
+                print(f"⚠️  Could not enable torch.compile: {e}")
+    
     def update_target_network(self):
         """Copy weights from model to target_model"""
         if self.use_target_network:
@@ -73,6 +119,12 @@ class DQNAgent:
     
     def remember(self, state, action, reward, next_state, done):
         """Store experience in replay memory"""
+        # Store as numpy arrays to avoid conversion overhead later
+        if not isinstance(state, np.ndarray):
+            state = np.array(state, dtype=np.float32)
+        if not isinstance(next_state, np.ndarray):
+            next_state = np.array(next_state, dtype=np.float32)
+        
         self.memory.append((state, action, reward, next_state, done))
     
     def act(self, state, inference_mode=False):
@@ -80,8 +132,11 @@ class DQNAgent:
         if not inference_mode and np.random.rand() <= self.epsilon:
             return random.randrange(self.action_size)
         
-        state_tensor = torch.FloatTensor(state).unsqueeze(0)
-        with torch.no_grad():
+        # Convert state to tensor and move to device
+        state_tensor = torch.from_numpy(np.array(state, dtype=np.float32)).unsqueeze(0).to(self.device)
+        
+        # Use torch.inference_mode for faster inference
+        with torch.inference_mode():
             q_values = self.model(state_tensor)
         return q_values.argmax().item()
     
@@ -92,12 +147,20 @@ class DQNAgent:
         
         minibatch = random.sample(self.memory, batch_size)
         
-        # Batch processing for efficiency
-        states = torch.from_numpy(np.array([exp[0] for exp in minibatch], dtype=np.float32))
-        actions = torch.LongTensor([exp[1] for exp in minibatch])
-        rewards = torch.FloatTensor([exp[2] for exp in minibatch])
-        next_states = torch.FloatTensor([exp[3] for exp in minibatch])
-        dones = torch.FloatTensor([exp[4] for exp in minibatch])
+        # Optimized batch processing - create arrays first, then convert to tensors
+        # This is much faster than list comprehensions for tensor creation
+        states_array = np.array([exp[0] for exp in minibatch], dtype=np.float32)
+        actions_array = np.array([exp[1] for exp in minibatch], dtype=np.int64)
+        rewards_array = np.array([exp[2] for exp in minibatch], dtype=np.float32)
+        next_states_array = np.array([exp[3] for exp in minibatch], dtype=np.float32)
+        dones_array = np.array([exp[4] for exp in minibatch], dtype=np.float32)
+        
+        # Convert to tensors and move to device
+        states = torch.from_numpy(states_array).to(self.device)
+        actions = torch.from_numpy(actions_array).to(self.device)
+        rewards = torch.from_numpy(rewards_array).to(self.device)
+        next_states = torch.from_numpy(next_states_array).to(self.device)
+        dones = torch.from_numpy(dones_array).to(self.device)
         
         # Current Q values
         current_q_values = self.model(states).gather(1, actions.unsqueeze(1))
@@ -115,7 +178,8 @@ class DQNAgent:
         # Compute loss and update
         loss = self.criterion(current_q_values.squeeze(), target_q_values)
         
-        self.optimizer.zero_grad()
+        # Use optimizer.zero_grad(set_to_none=True) for better performance
+        self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
         # Gradient clipping to prevent exploding gradients
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10)
@@ -140,7 +204,8 @@ class DQNAgent:
             'epsilon': self.epsilon,
             'state_size': self.state_size,
             'action_size': self.action_size,
-            'step_count': self.step_count
+            'step_count': self.step_count,
+            'device': str(self.device)
         }
         
         if self.use_target_network:
@@ -152,17 +217,22 @@ class DQNAgent:
     def load(self, filepath="snake_dqn_model.pth"):
         """Load a trained model"""
         if os.path.exists(filepath):
-            checkpoint = torch.load(filepath)
+            # Load to CPU first, then move to current device
+            checkpoint = torch.load(filepath, map_location='cpu')
             self.model.load_state_dict(checkpoint['model_state_dict'])
+            self.model.to(self.device)
+            
             self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
             self.epsilon = checkpoint['epsilon']
             self.step_count = checkpoint.get('step_count', 0)
             
             if self.use_target_network and 'target_model_state_dict' in checkpoint:
                 self.target_model.load_state_dict(checkpoint['target_model_state_dict'])
+                self.target_model.to(self.device)
             
             print(f"✓ Model loaded from {filepath}")
             print(f"  Epsilon: {self.epsilon:.4f}, Steps: {self.step_count}")
+            print(f"  Device: {self.device}")
             return True
         else:
             print(f"⚠️  No saved model found at {filepath}")
@@ -170,9 +240,9 @@ class DQNAgent:
 
 
 def train_agent(env, agent, episodes=1000, max_steps=500, save_every=1000, 
-                model_path="snake_dqn_model.pth", render_every=0):
+                model_path="snake_dqn_model.pth", render_every=0, batch_size=32):
     """
-    Training loop with improved tracking
+    Training loop with improved tracking and optimizations
     
     Args:
         env: Gymnasium environment
@@ -182,6 +252,7 @@ def train_agent(env, agent, episodes=1000, max_steps=500, save_every=1000,
         save_every: Save model every N episodes
         model_path: Path to save model
         render_every: Render every N episodes (0 = never)
+        batch_size: Batch size for training (larger is faster on GPU)
     """
     episode_rewards = []
     episode_lengths = []
@@ -190,6 +261,7 @@ def train_agent(env, agent, episodes=1000, max_steps=500, save_every=1000,
     
     print(f"\n{'='*60}")
     print(f"Training for {episodes} episodes")
+    print(f"Batch size: {batch_size}")
     print(f"{'='*60}\n")
     
     for episode in range(episodes):
@@ -214,11 +286,13 @@ def train_agent(env, agent, episodes=1000, max_steps=500, save_every=1000,
             # Store experience
             agent.remember(state, action, reward, next_state, terminated or truncated)
             
-            # Train agent
-            loss = agent.replay(batch_size=32)
-            if loss > 0:
-                episode_loss += loss
-                loss_count += 1
+            # Train agent - only train every few steps to improve speed
+            # More frequent training doesn't always help and slows down data collection
+            if step % 4 == 0 or terminated or truncated:
+                loss = agent.replay(batch_size=batch_size)
+                if loss > 0:
+                    episode_loss += loss
+                    loss_count += 1
             
             state = next_state
             
@@ -425,13 +499,18 @@ if __name__ == "__main__":
         if CONFIG['train_mode']:
             # Training
             print("\n3. Starting training...")
+            
+            # Use larger batch size on GPU for better performance
+            batch_size = 64 if torch.cuda.is_available() else 32
+            
             rewards, lengths, losses = train_agent(
                 env, agent,
                 episodes=CONFIG['episodes'],
                 max_steps=CONFIG['max_steps'],
                 save_every=CONFIG['save_every'],
                 model_path=CONFIG['model_path'],
-                render_every=CONFIG['render_every']
+                render_every=CONFIG['render_every'],
+                batch_size=batch_size
             )
             
             # Final save
