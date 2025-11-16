@@ -7,7 +7,7 @@ import torch.nn as nn
 import torch.optim as optim
 import random
 import os
-from typing import Optional, Tuple
+from typing import Optional
 
 # Import the fixed Gymnasium environment
 from env_local import SnakeEnv
@@ -92,6 +92,20 @@ class ReplayBuffer:
         )
 
 
+def resolve_device(requested: str = "auto") -> torch.device:
+    if requested == "cuda" and torch.cuda.is_available():
+        return torch.device("cuda")
+    if requested == "mps" and torch.backends.mps.is_available():
+        return torch.device("mps")
+    if requested == "cpu":
+        return torch.device("cpu")
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
 class DQNAgent:
     """Deep Q-Network agent with target network and fast replay buffer."""
 
@@ -119,7 +133,10 @@ class DQNAgent:
         self.step_count = 0
         self.device = device or torch.device("cpu")
         self.amp_enabled = use_amp and self.device.type == "cuda"
-        self.scaler = torch.cuda.amp.GradScaler(enabled=self.amp_enabled)
+        if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+            self.scaler = torch.amp.GradScaler("cuda", enabled=self.amp_enabled)
+        else:
+            self.scaler = torch.cuda.amp.GradScaler(enabled=self.amp_enabled)
 
         self.memory = ReplayBuffer(buffer_capacity, state_size)
 
@@ -232,6 +249,26 @@ class DQNAgent:
         return False
 
 
+def parse_cli_args(base_config: dict):
+    parser = argparse.ArgumentParser(description="Snake RL trainer")
+    parser.add_argument("--episodes", type=int, default=base_config['episodes'])
+    parser.add_argument("--max-steps", type=int, default=base_config['max_steps'])
+    parser.add_argument("--save-every", type=int, default=base_config['save_every'])
+    parser.add_argument("--render-every", type=int, default=base_config['render_every'])
+    parser.add_argument("--learning-rate", type=float, default=base_config['learning_rate'])
+    parser.add_argument("--gamma", type=float, default=base_config['gamma'])
+    parser.add_argument("--buffer-capacity", type=int, default=100_000)
+    parser.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default="auto")
+    parser.add_argument("--no-amp", action="store_true", help="Disable CUDA AMP")
+    parser.add_argument("--compile-model", action="store_true", help="Use torch.compile where available")
+    parser.add_argument("--load-model", action="store_true", default=base_config['load_model'])
+    parser.add_argument("--model-path", type=str, default=base_config['model_path'])
+    parser.add_argument("--eval-episodes", type=int, default=base_config['eval_episodes'])
+    parser.add_argument("--eval-only", action="store_true", help="Skip training and evaluate only")
+    parser.add_argument("--fast-debug", action="store_true", help="Limit workload for smoke tests")
+    return parser.parse_args()
+
+
 def train_agent(env, agent, episodes=1000, max_steps=500, save_every=1000, 
                 model_path="snake_dqn_model.pth", render_every=0):
     """
@@ -257,7 +294,7 @@ def train_agent(env, agent, episodes=1000, max_steps=500, save_every=1000,
     
     for episode in range(episodes):
         obs, info = env.reset()
-        state = obs.flatten()
+        state = obs.astype(np.float32).flatten()
         total_reward = 0
         episode_loss = 0
         loss_count = 0
@@ -271,7 +308,7 @@ def train_agent(env, agent, episodes=1000, max_steps=500, save_every=1000,
             
             # Take step
             obs, reward, terminated, truncated, info = env.step(action)
-            next_state = obs.flatten()
+            next_state = obs.astype(np.float32).flatten()
             total_reward += reward
             
             # Store experience
@@ -336,7 +373,7 @@ def evaluate_agent(env, agent, num_episodes=10, max_steps=500, render=True):
     
     for episode in range(num_episodes):
         obs, info = env.reset()
-        state = obs.flatten()
+        state = obs.astype(np.float32).flatten()
         total_reward = 0
         
         for step in range(max_steps):
@@ -344,7 +381,7 @@ def evaluate_agent(env, agent, num_episodes=10, max_steps=500, render=True):
             action = agent.act(state, inference_mode=True)
             
             obs, reward, terminated, truncated, info = env.step(action)
-            next_state = obs.flatten()
+            next_state = obs.astype(np.float32).flatten()
             total_reward += reward
             state = next_state
             
@@ -376,8 +413,8 @@ def plot_training_results(rewards, lengths, losses, save_path="training_results.
     
     # Plot 1: Episode Rewards
     axes[0, 0].plot(rewards, alpha=0.3, label='Episode Reward')
-    window = min(100, len(rewards) // 10)
-    if len(rewards) >= window:
+    window = max(1, min(100, len(rewards) // 10 or 1))
+    if len(rewards) >= window and window > 1:
         moving_avg = np.convolve(rewards, np.ones(window)/window, mode='valid')
         axes[0, 0].plot(range(window-1, len(rewards)), moving_avg, 
                        label=f'{window}-Episode Moving Avg', linewidth=2)
@@ -389,7 +426,7 @@ def plot_training_results(rewards, lengths, losses, save_path="training_results.
     
     # Plot 2: Episode Lengths
     axes[0, 1].plot(lengths, alpha=0.3, label='Episode Length')
-    if len(lengths) >= window:
+    if len(lengths) >= window and window > 1:
         moving_avg = np.convolve(lengths, np.ones(window)/window, mode='valid')
         axes[0, 1].plot(range(window-1, len(lengths)), moving_avg, 
                        label=f'{window}-Episode Moving Avg', linewidth=2)
@@ -401,7 +438,7 @@ def plot_training_results(rewards, lengths, losses, save_path="training_results.
     
     # Plot 3: Training Loss
     axes[1, 0].plot(losses, alpha=0.5, label='Loss')
-    if len(losses) >= window:
+    if len(losses) >= window and window > 1:
         moving_avg = np.convolve(losses, np.ones(window)/window, mode='valid')
         axes[1, 0].plot(range(window-1, len(losses)), moving_avg, 
                        label=f'{window}-Episode Moving Avg', linewidth=2)
@@ -449,6 +486,28 @@ if __name__ == "__main__":
         'gamma': 0.99,
         'use_target_network': True
     }
+
+    args = parse_cli_args(CONFIG)
+    CONFIG['episodes'] = args.episodes
+    CONFIG['max_steps'] = args.max_steps
+    CONFIG['save_every'] = args.save_every
+    CONFIG['render_every'] = args.render_every
+    CONFIG['learning_rate'] = args.learning_rate
+    CONFIG['gamma'] = args.gamma
+    CONFIG['load_model'] = args.load_model or args.eval_only
+    CONFIG['model_path'] = args.model_path
+    CONFIG['eval_episodes'] = args.eval_episodes
+    CONFIG['train_mode'] = CONFIG['train_mode'] and not args.eval_only
+
+    if args.fast_debug:
+        CONFIG['episodes'] = min(CONFIG['episodes'], 5)
+        CONFIG['max_steps'] = min(CONFIG['max_steps'], 50)
+        CONFIG['save_every'] = max(1, CONFIG['episodes'])
+
+    compute_device = resolve_device(args.device)
+    amp_enabled = not args.no_amp
+    buffer_capacity = args.buffer_capacity
+    compile_model = args.compile_model
     
     # Create environment
     print("\n1. Creating environment...")
@@ -462,19 +521,29 @@ if __name__ == "__main__":
     # Get dimensions
     obs, _ = env.reset()
     state_size = obs.flatten().shape[0]
-    action_size = env.action_space.n
+    action_size = getattr(env.action_space, "n", None)
+    if action_size is None:
+        space_shape = getattr(env.action_space, "shape", None)
+        if space_shape is None:
+            raise AttributeError("Unsupported action space: missing 'n' and 'shape' attributes")
+        action_size = int(np.prod(space_shape))
     
     print(f"✓ State size: {state_size} ({CONFIG['dim']}x{CONFIG['dim']})")
     print(f"✓ Action size: {action_size}")
     
     # Create agent
     print("\n2. Creating DQN agent...")
+    print(f"   → Device: {compute_device}, AMP: {amp_enabled and compute_device.type == 'cuda'}")
     agent = DQNAgent(
         state_size,
         action_size,
         learning_rate=CONFIG['learning_rate'],
         gamma=CONFIG['gamma'],
-        use_target_network=CONFIG['use_target_network']
+        use_target_network=CONFIG['use_target_network'],
+        buffer_capacity=buffer_capacity,
+        device=compute_device,
+        use_amp=amp_enabled,
+        compile_model=compile_model
     )
     print(f"✓ Learning rate: {CONFIG['learning_rate']}")
     print(f"✓ Gamma: {CONFIG['gamma']}")
