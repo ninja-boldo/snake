@@ -18,9 +18,9 @@ dir = 1
 atePowerUp = False
 errorInLine = -1
 
-lostReward = -50
-startReward = 0.05
-rewardPowerUp = 2.5
+lostReward = -1000
+startReward = 0.01
+rewardPowerUp = 15
 reward = 0
 
 

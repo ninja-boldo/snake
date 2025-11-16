@@ -214,7 +214,7 @@ class SnakeEnv(gym.Env):
             
             if self.episode_count % 200 == 0 and self.episode_count > 1:
                 
-                print(f"✓ Episode initialized")
+                print("✓ Episode initialized")
                 print(f"   Snake length: {self.last_snake_length}")
                 print(f"   PowerUps: {len(snake_engine.powerUps)}")
                 print(f"{'='*60}\n")

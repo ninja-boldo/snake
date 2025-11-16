@@ -93,7 +93,7 @@ class DQNAgent:
         minibatch = random.sample(self.memory, batch_size)
         
         # Batch processing for efficiency
-        states = torch.FloatTensor([exp[0] for exp in minibatch])
+        states = torch.from_numpy(np.array([exp[0] for exp in minibatch], dtype=np.float32))
         actions = torch.LongTensor([exp[1] for exp in minibatch])
         rewards = torch.FloatTensor([exp[2] for exp in minibatch])
         next_states = torch.FloatTensor([exp[3] for exp in minibatch])
@@ -169,7 +169,7 @@ class DQNAgent:
             return False
 
 
-def train_agent(env, agent, episodes=1000, max_steps=500, save_every=100, 
+def train_agent(env, agent, episodes=1000, max_steps=500, save_every=1000, 
                 model_path="snake_dqn_model.pth", render_every=0):
     """
     Training loop with improved tracking
@@ -241,7 +241,7 @@ def train_agent(env, agent, episodes=1000, max_steps=500, save_every=100,
             agent.save(model_path.replace('.pth', '_best.pth'))
         
         # Logging
-        if (episode + 1) % 10 == 0:
+        if (episode + 1) % 200 == 0:
             recent_rewards = episode_rewards[-10:]
             recent_lengths = episode_lengths[-10:]
             avg_reward = np.mean(recent_rewards)
@@ -375,14 +375,14 @@ if __name__ == "__main__":
         'train_mode': True,        # Set to False for evaluation only
         'load_model': False,       # Load existing model
         'model_path': 'snake_dqn.pth',
-        'episodes': 100000,          # Training episodes
+        'episodes': 50000,          # Training episodes
         'max_steps': 500,          # Max steps per episode
-        'save_every': 100,         # Save every N episodes
+        'save_every': 1000,         # Save every N episodes
         'render_every': 0,         # Render every N episodes (0=never)
         'eval_episodes': 10,       # Episodes for evaluation
-        'dim': 10,                 # Board size
+        'dim': 20,                 # Board size
         'starting_blocks': 3,      # Initial snake length
-        'learning_rate': 0.0005,
+        'learning_rate': 0.001,
         'gamma': 0.99,
         'use_target_network': True
     }

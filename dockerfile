@@ -19,20 +19,4 @@ RUN pip install --no-cache-dir uv selenium && \
 # Copy application code
 COPY . .
 
-# Copy and set permissions for startup script
-COPY start-training.sh /app/start-training.sh
-RUN chmod +x /app/start-training.sh
-
-# Expose ports
-EXPOSE 3030 5173
-
-# Install process manager
-RUN npm install -g concurrently
-
-CMD ["concurrently", \
-     "--names", "WS,VITE,BROWSER", \
-     "--prefix", "[{name}]", \
-     "--prefix-colors", "blue,green,magenta", \
-     "node src/websocket-server.js", \
-     "sleep 5 && npm run dev -- --host 0.0.0.0", \
-     "/app/start-training.sh"]
+CMD python rl/train.py
