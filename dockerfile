@@ -12,8 +12,9 @@ RUN apt-get update && \
 COPY package*.json requirements.txt ./
 
 # Install dependencies
-RUN pip install --no-cache-dir uv selenium && \
-    uv pip install --no-cache-dir -r requirements.txt --system && \
+RUN pip install --no-cache-dir uv selenium
+
+RUN uv pip install --no-cache-dir -r requirements.txt --system && \
     npm install
 
 # Copy application code

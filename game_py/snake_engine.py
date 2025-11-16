@@ -1,13 +1,14 @@
 import inspect
 import random
 import numpy as np
+from dataclasses import dataclass
 from typing import Tuple, List
 
 #declare beginning variables
 dimensions = 10
 distToBorder = 3
 startBlocks = 3
-worldMap = np.zeros((dimensions, dimensions))
+worldMap = np.zeros((dimensions, dimensions), dtype=np.int8)
 addXBlocks = 1
 
 lostGame = False
@@ -24,22 +25,24 @@ rewardPowerUp = 15
 reward = 0
 
 
+@dataclass(slots=True)
 class BodyElement:
-    def __init__(self, x, y, isHead: bool=False) -> None:
-        self.x = x
-        self.y = y
-        self.isHead = isHead
-        
+    x: int
+    y: int
+    isHead: bool = False
+
+
+@dataclass(slots=True)
 class PowerUp:
-    def __init__(self, x, y, addBlocks=1) -> None:
-        self.x = x
-        self.y = y
-        self.addBlocks = addBlocks
-        
+    x: int
+    y: int
+    addBlocks: int = 1
+
+
+@dataclass(slots=True)
 class Coordinates:
-    def __init__(self, x, y) -> None:
-        self.x = x 
-        self.y = y
+    x: int
+    y: int
         
 bodyElements: List[BodyElement] = []
 powerUps: List[PowerUp] = []
@@ -52,10 +55,10 @@ def line_of_call():
 
 def wipeWorldMapInplace():
     global worldMap
-    worldMap = np.zeros((dimensions, dimensions))
+    worldMap = np.zeros((dimensions, dimensions), dtype=np.int8)
     
 def wipeWorldMap() -> np.ndarray:
-    return np.zeros((dimensions, dimensions))
+    return np.zeros((dimensions, dimensions), dtype=np.int8)
     
 def chooseDir(disallowed: list[int]) -> int:
     #0 is up, 1 is right, 2 is down and 3 is left
@@ -102,14 +105,12 @@ def spawnBody() -> None:
         addBlock(x, y, elementType=1)
     
 def spawnPowerUp(addBlocks: int=1) -> None:
-    x = random.randint(0, dimensions - 1)
-    y = random.randint(0, dimensions - 1)
-    
-    while worldMap[y][x] != 0:
-        x = random.randint(0, dimensions - 1)
-        y = random.randint(0, dimensions - 1)
-    
-    addBlock(x, y, elementType=3)
+    empty_cells = np.argwhere(worldMap == 0)
+    if empty_cells.size == 0:
+        return
+    idx = random.randrange(len(empty_cells))
+    y, x = empty_cells[idx]
+    addBlock(int(x), int(y), elementType=3)
 
 def genNewCoord(x:int, y:int, dir:int) -> Tuple[int, int]:
     if dir == 0:

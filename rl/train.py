@@ -1,15 +1,23 @@
+import argparse
 import time
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from collections import deque
 import random
 import os
+from typing import Optional, Tuple
 
 # Import the fixed Gymnasium environment
 from env_local import SnakeEnv
+
+try:
+    torch.set_float32_matmul_precision("medium")
+except AttributeError:
+    pass
+
+torch.backends.cudnn.benchmark = True
 
 
 class DQNetwork(nn.Module):
@@ -40,133 +48,188 @@ class DQNetwork(nn.Module):
         return self.network(x)
 
 
+class ReplayBuffer:
+    """Fast replay buffer backed by contiguous numpy arrays."""
+
+    def __init__(self, capacity: int, state_dim: int):
+        self.capacity = capacity
+        self.state_dim = state_dim
+        self.states = np.zeros((capacity, state_dim), dtype=np.float32)
+        self.next_states = np.zeros((capacity, state_dim), dtype=np.float32)
+        self.rewards = np.zeros(capacity, dtype=np.float32)
+        self.actions = np.zeros(capacity, dtype=np.int64)
+        self.dones = np.zeros(capacity, dtype=np.bool_)
+        self.idx = 0
+        self.full = False
+
+    def add(self, state, action, reward, next_state, done):
+        flat_state = np.asarray(state, dtype=np.float32).reshape(-1)
+        flat_next_state = np.asarray(next_state, dtype=np.float32).reshape(-1)
+        self.states[self.idx] = flat_state
+        self.next_states[self.idx] = flat_next_state
+        self.rewards[self.idx] = reward
+        self.actions[self.idx] = action
+        self.dones[self.idx] = done
+        self.idx = (self.idx + 1) % self.capacity
+        if self.idx == 0:
+            self.full = True
+
+    def __len__(self):
+        return self.capacity if self.full else self.idx
+
+    def can_sample(self, batch_size: int) -> bool:
+        return len(self) >= batch_size
+
+    def sample(self, batch_size: int):
+        max_index = self.capacity if self.full else self.idx
+        indices = np.random.choice(max_index, batch_size, replace=False)
+        return (
+            self.states[indices],
+            self.actions[indices],
+            self.rewards[indices],
+            self.next_states[indices],
+            self.dones[indices],
+        )
+
+
 class DQNAgent:
-    """Deep Q-Network agent with target network and prioritized experience replay"""
-    def __init__(self, state_size, action_size, learning_rate=0.0005, 
-                 gamma=0.99, use_target_network=True):
+    """Deep Q-Network agent with target network and fast replay buffer."""
+
+    def __init__(
+        self,
+        state_size,
+        action_size,
+        learning_rate=0.0005,
+        gamma=0.99,
+        use_target_network=True,
+        buffer_capacity: int = 100_000,
+        device: Optional[torch.device] = None,
+        use_amp: bool = True,
+        compile_model: bool = False,
+    ):
         self.state_size = state_size
         self.action_size = action_size
-        self.memory = deque(maxlen=10000)  # Increased memory
-        self.gamma = gamma  # discount rate
-        self.epsilon = 1.0  # exploration rate
+        self.gamma = gamma
+        self.epsilon = 1.0
         self.epsilon_min = 0.01
         self.epsilon_decay = 0.995
         self.learning_rate = learning_rate
         self.use_target_network = use_target_network
-        self.update_target_every = 100  # Update target network every N steps
+        self.update_target_every = 100
         self.step_count = 0
-        
-        # Q-Network
-        self.model = DQNetwork(state_size, action_size)
+        self.device = device or torch.device("cpu")
+        self.amp_enabled = use_amp and self.device.type == "cuda"
+        self.scaler = torch.cuda.amp.GradScaler(enabled=self.amp_enabled)
+
+        self.memory = ReplayBuffer(buffer_capacity, state_size)
+
+        self.model = DQNetwork(state_size, action_size).to(self.device)
+        if compile_model and hasattr(torch, "compile"):
+            self.model = torch.compile(self.model)  # type: ignore[attr-defined]
         self.optimizer = optim.Adam(self.model.parameters(), lr=learning_rate)
-        self.criterion = nn.SmoothL1Loss()  # Huber loss - more stable than MSE
-        
-        # Target network (for stable training)
-        if use_target_network:
-            self.target_model = DQNetwork(state_size, action_size)
-            self.update_target_network()
-        
-    def update_target_network(self):
-        """Copy weights from model to target_model"""
+        self.criterion = nn.SmoothL1Loss()
+
         if self.use_target_network:
+            self.target_model = DQNetwork(state_size, action_size).to(self.device)
+            self.update_target_network()
+            if compile_model and hasattr(torch, "compile"):
+                self.target_model = torch.compile(self.target_model)  # type: ignore[attr-defined]
+        else:
+            self.target_model = None
+
+    def update_target_network(self):
+        if self.use_target_network and self.target_model is not None:
             self.target_model.load_state_dict(self.model.state_dict())
-    
+
     def remember(self, state, action, reward, next_state, done):
-        """Store experience in replay memory"""
-        self.memory.append((state, action, reward, next_state, done))
-    
-    def act(self, state, inference_mode=False):
-        """Choose action using epsilon-greedy policy"""
+        self.memory.add(state, action, reward, next_state, done)
+
+    def act(self, state, inference_mode: bool = False):
         if not inference_mode and np.random.rand() <= self.epsilon:
             return random.randrange(self.action_size)
-        
-        state_tensor = torch.FloatTensor(state).unsqueeze(0)
+
+        state_tensor = torch.as_tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
         with torch.no_grad():
             q_values = self.model(state_tensor)
-        return q_values.argmax().item()
-    
+        return int(q_values.argmax(dim=1).item())
+
     def replay(self, batch_size=32):
-        """Train on a random batch from memory"""
-        if len(self.memory) < batch_size:
+        if not self.memory.can_sample(batch_size):
             return 0.0
-        
-        minibatch = random.sample(self.memory, batch_size)
-        
-        # Batch processing for efficiency
-        states = torch.from_numpy(np.array([exp[0] for exp in minibatch], dtype=np.float32))
-        actions = torch.LongTensor([exp[1] for exp in minibatch])
-        rewards = torch.FloatTensor([exp[2] for exp in minibatch])
-        next_states = torch.FloatTensor([exp[3] for exp in minibatch])
-        dones = torch.FloatTensor([exp[4] for exp in minibatch])
-        
-        # Current Q values
-        current_q_values = self.model(states).gather(1, actions.unsqueeze(1))
-        
-        # Next Q values (use target network if available)
-        with torch.no_grad():
-            if self.use_target_network:
-                next_q_values = self.target_model(next_states).max(1)[0]
+
+        states, actions, rewards, next_states, dones = self.memory.sample(batch_size)
+        states_t = torch.from_numpy(states).to(self.device)
+        actions_t = torch.from_numpy(actions).to(self.device)
+        rewards_t = torch.from_numpy(rewards).to(self.device)
+        next_states_t = torch.from_numpy(next_states).to(self.device)
+        dones_t = torch.from_numpy(dones.astype(np.float32)).to(self.device)
+
+        with torch.cuda.amp.autocast(enabled=self.amp_enabled):
+            current_q_values = self.model(states_t).gather(1, actions_t.unsqueeze(1)).squeeze(1)
+
+            if self.use_target_network and self.target_model is not None:
+                next_q_values = self.target_model(next_states_t).max(1)[0]
             else:
-                next_q_values = self.model(next_states).max(1)[0]
-            
-            # Compute target Q values
-            target_q_values = rewards + (1 - dones) * self.gamma * next_q_values
-        
-        # Compute loss and update
-        loss = self.criterion(current_q_values.squeeze(), target_q_values)
-        
-        self.optimizer.zero_grad()
-        loss.backward()
-        # Gradient clipping to prevent exploding gradients
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10)
-        self.optimizer.step()
-        
-        # Update target network periodically
+                next_q_values = self.model(next_states_t).max(1)[0]
+
+            target_q_values = rewards_t + (1 - dones_t) * self.gamma * next_q_values
+            loss = self.criterion(current_q_values, target_q_values)
+
+        self.optimizer.zero_grad(set_to_none=True)
+
+        if self.amp_enabled:
+            self.scaler.scale(loss).backward()
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=10)
+            self.optimizer.step()
+
         self.step_count += 1
         if self.use_target_network and self.step_count % self.update_target_every == 0:
             self.update_target_network()
-        
-        # Decay epsilon
+
         if self.epsilon > self.epsilon_min:
             self.epsilon *= self.epsilon_decay
-        
-        return loss.item()
-    
+
+        return float(loss.item())
+
     def save(self, filepath="snake_dqn_model.pth"):
-        """Save the trained model"""
         save_dict = {
-            'model_state_dict': self.model.state_dict(),
-            'optimizer_state_dict': self.optimizer.state_dict(),
-            'epsilon': self.epsilon,
-            'state_size': self.state_size,
-            'action_size': self.action_size,
-            'step_count': self.step_count
+            "model_state_dict": self.model.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "epsilon": self.epsilon,
+            "state_size": self.state_size,
+            "action_size": self.action_size,
+            "step_count": self.step_count,
         }
-        
-        if self.use_target_network:
-            save_dict['target_model_state_dict'] = self.target_model.state_dict()
-        
+
+        if self.use_target_network and self.target_model is not None:
+            save_dict["target_model_state_dict"] = self.target_model.state_dict()
+
         torch.save(save_dict, filepath)
         print(f"✓ Model saved to {filepath}")
-    
+
     def load(self, filepath="snake_dqn_model.pth"):
-        """Load a trained model"""
         if os.path.exists(filepath):
-            checkpoint = torch.load(filepath)
-            self.model.load_state_dict(checkpoint['model_state_dict'])
-            self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-            self.epsilon = checkpoint['epsilon']
-            self.step_count = checkpoint.get('step_count', 0)
-            
-            if self.use_target_network and 'target_model_state_dict' in checkpoint:
-                self.target_model.load_state_dict(checkpoint['target_model_state_dict'])
-            
+            checkpoint = torch.load(filepath, map_location=self.device)
+            self.model.load_state_dict(checkpoint["model_state_dict"])
+            self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            self.epsilon = checkpoint["epsilon"]
+            self.step_count = checkpoint.get("step_count", 0)
+
+            if self.use_target_network and self.target_model is not None and "target_model_state_dict" in checkpoint:
+                self.target_model.load_state_dict(checkpoint["target_model_state_dict"])
+
             print(f"✓ Model loaded from {filepath}")
             print(f"  Epsilon: {self.epsilon:.4f}, Steps: {self.step_count}")
             return True
-        else:
-            print(f"⚠️  No saved model found at {filepath}")
-            return False
+
+        print(f"⚠️  No saved model found at {filepath}")
+        return False
 
 
 def train_agent(env, agent, episodes=1000, max_steps=500, save_every=1000, 
