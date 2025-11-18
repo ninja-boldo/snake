@@ -174,6 +174,7 @@ class SnakeEnv(gym.Env):
                 self.dim
             )
         else:
+            print(f"snake_engine.worldMap.copy(): {snake_engine.worldMap.copy()}")
             return snake_engine.worldMap.copy()
     
     def step(self, action: int):

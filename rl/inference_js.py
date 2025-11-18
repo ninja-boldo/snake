@@ -160,7 +160,8 @@ def main():
             startingBlocks=3,
             dim=args.dim,
             distToBorder=3,
-            ws_url=args.ws_url
+            ws_url=args.ws_url,
+            use_features=True
         )
     except Exception as e:
         print(f"\nâŒ Failed to connect to game: {e}")

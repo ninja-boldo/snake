@@ -20,28 +20,34 @@ torch.backends.cudnn.benchmark = True
 
 
 class DQNetwork(nn.Module):
-    def __init__(self, input_size, output_size, hidden_size=256):
-        super(DQNetwork, self).__init__()
+    def __init__(self, input_size: int, output_size: int, hidden_size: int = 256):
+        print(f"input_size: {input_size}, output_size: {output_size}, hidden_size: {hidden_size}")
+        super().__init__()
         self.network = nn.Sequential(
             nn.Linear(input_size, hidden_size),
             nn.ReLU(),
-            nn.Dropout(0.1),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
-            nn.Dropout(0.1),
             nn.Linear(hidden_size, 128),
             nn.ReLU(),
             nn.Linear(128, output_size)
         )
-        self.apply(self._init_weights)
+        self._init_weights()
     
-    def _init_weights(self, module):
-        if isinstance(module, nn.Linear):
-            nn.init.xavier_uniform_(module.weight)
-            nn.init.constant_(module.bias, 0)
-    
-    def forward(self, x):
-        return self.network(x)
+    def _init_weights(self):
+        for m in self.network:
+            if isinstance(m, nn.Linear):
+                # small init for final layer
+                if m.out_features == self.network[-1].out_features:
+                    nn.init.uniform_(m.weight, -3e-3, 3e-3)
+                else:
+                    nn.init.xavier_uniform_(m.weight)
+                nn.init.constant_(m.bias, 0.0)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.dim() > 2:
+            x = x.view(x.size(0), -1)
+        return self.network(x.float())
 
 
 class ReplayBuffer:

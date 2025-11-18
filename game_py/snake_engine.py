@@ -231,13 +231,6 @@ def collisionWithBody(dir:int) -> bool:
     else:
         return True
 
-def modDir() -> int:
-    global dir
-    raise NotImplementedError("modDir() must be implemented by RL agent")
-
-def sendReward(reward: float) -> None:
-    raise NotImplementedError("sendReward() must be implemented by RL agent")
-
 def resetGame():
     global lostGame, borderCollsion, bodyCollision, dir, atePowerUp, reward
     global bodyElements, powerUps, worldMap
@@ -272,9 +265,6 @@ def doGame():
             reward += lostReward
             
         moveSnake(dir=dir)   
-        sendReward(reward=reward)     
-        
-        dir = modDir()
 
 def getDistPowerUp():
     '''
