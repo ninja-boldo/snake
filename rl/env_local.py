@@ -4,126 +4,209 @@ from gymnasium import spaces
 import sys
 import os
 
-# Add parent directory to path to import snake_engine
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from game_py import snake_engine
 
 
-class SnakeEnv(gym.Env):
-    """Custom Snake Environment that follows Gymnasium interface."""
+class RewardShaper:
+    def __init__(self, dim: int):
+        self.dim = dim
+        self.prev_distance = None
+        self.survival_steps = 0
+        
+    def reset(self):
+        self.prev_distance = None
+        self.survival_steps = 0
     
+    def calculate(self, worldMap, bodyElements, powerUps, ate_powerup, collision):
+        reward = 0.0
+        
+        if collision:
+            return -10.0
+        
+        if ate_powerup:
+            reward += 10.0
+            self.prev_distance = None
+        
+        if powerUps and bodyElements:
+            head = bodyElements[0]
+            food = powerUps[0]
+            current_distance = abs(head.x - food.x) + abs(head.y - food.y)
+            
+            if self.prev_distance is not None:
+                if current_distance < self.prev_distance:
+                    reward += 0.1
+                elif current_distance > self.prev_distance:
+                    reward -= 0.1
+            
+            self.prev_distance = current_distance
+        
+        self.survival_steps += 1
+        reward += 0.01
+        
+        snake_length = len(bodyElements)
+        reward += 0.01 * snake_length
+        
+        if bodyElements:
+            head = bodyElements[0]
+            danger_count = 0
+            for dx, dy in [(0, -1), (1, 0), (0, 1), (-1, 0)]:
+                nx, ny = head.x + dx, head.y + dy
+                if nx < 0 or nx >= self.dim or ny < 0 or ny >= self.dim:
+                    danger_count += 1
+                elif 0 <= ny < self.dim and 0 <= nx < self.dim:
+                    if worldMap[ny][nx] in [1, 2]:
+                        danger_count += 1
+            
+            if danger_count >= 3:
+                reward -= 0.05
+        
+        return reward
+
+
+def extract_features(worldMap, bodyElements, powerUps, current_dir, dim):
+    head = bodyElements[0]
+    features = []
+    
+    dir_encoding = [0, 0, 0, 0]
+    dir_encoding[current_dir] = 1
+    features.extend(dir_encoding)
+    
+    directions = [(0, -1), (1, 0), (0, 1), (-1, 0)]
+    for dx, dy in directions:
+        new_x, new_y = head.x + dx, head.y + dy
+        is_danger = 0
+        if new_x < 0 or new_x >= dim or new_y < 0 or new_y >= dim:
+            is_danger = 1
+        elif 0 <= new_y < dim and 0 <= new_x < dim:
+            if worldMap[new_y][new_x] in [1, 2]:
+                is_danger = 1
+        features.append(is_danger)
+    
+    if powerUps:
+        food = powerUps[0]
+        food_dx = food.x - head.x
+        food_dy = food.y - head.y
+        
+        food_dir = [0, 0, 0, 0]
+        if abs(food_dy) > abs(food_dx):
+            food_dir[0 if food_dy < 0 else 2] = 1
+        else:
+            food_dir[1 if food_dx > 0 else 3] = 1
+        features.extend(food_dir)
+        
+        features.append(food_dx / dim)
+        features.append(food_dy / dim)
+    else:
+        features.extend([0, 0, 0, 0, 0, 0])
+    
+    features.append(len(bodyElements) / (dim * dim))
+    features.append(head.x / dim)
+    features.append(head.y / dim)
+    
+    if len(bodyElements) > 1:
+        tail = bodyElements[-1]
+        features.append(tail.x / dim)
+        features.append(tail.y / dim)
+    else:
+        features.extend([0, 0])
+    
+    return np.array(features, dtype=np.float32)
+
+
+class SnakeEnv(gym.Env):
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 10}
 
     def __init__(self, startingBlocks: int = 3, dim: int = 10, distToBorder: int = 3, 
-                 render_mode=None):
-        """
-        Initialize the Snake environment.
-        
-        Args:
-            startingBlocks: Initial length of snake
-            dim: Dimension of the game board (dim x dim)
-            distToBorder: Minimum distance from border for snake spawn
-            render_mode: Rendering mode ('human', 'rgb_array', or None)
-        """
+                 render_mode=None, use_features=True):
         super().__init__()
         
-        # Store configuration
         self.startingBlocks = startingBlocks
         self.dim = dim
         self.distToBorder = distToBorder
         self.render_mode = render_mode
+        self.use_features = use_features
         
-        # Configure snake_engine with our settings
         snake_engine.dimensions = dim
         snake_engine.startBlocks = startingBlocks
         snake_engine.distToBorder = distToBorder
         
-        # Define action and observation spaces
-        # Actions: 0=up, 1=right, 2=down, 3=left
         self.action_space = spaces.Discrete(4)
         
-        # Observations: grid with values 0-3
-        # 0=empty, 1=body, 2=head, 3=powerup
-        self.observation_space = spaces.Box(
-            low=0, 
-            high=3,
-            shape=(dim, dim), 
-            dtype=np.int8
-        )
+        if use_features:
+            self.observation_space = spaces.Box(
+                low=-1.0, 
+                high=1.0,
+                shape=(19,), 
+                dtype=np.float32
+            )
+        else:
+            self.observation_space = spaces.Box(
+                low=0, 
+                high=3,
+                shape=(dim, dim), 
+                dtype=np.int8
+            )
         
-        # Episode tracking
         self._first_reset_done = False
         self.episode_count = 0
         self.step_count = 0
         self.total_reward = 0
-        self.max_steps = dim * dim * 2  # Prevent infinite episodes
+        self.max_steps = dim * dim * 2
         
-        # Game state tracking
         self.last_snake_length = startingBlocks
         self.powerups_collected = 0
+        self.reward_shaper = RewardShaper(dim)
     
     def _validate_action(self, action: int, current_dir: int) -> int:
-        """
-        Validate action to prevent 180-degree turns (snake can't go backwards).
-        
-        Args:
-            action: Proposed action
-            current_dir: Current direction
-            
-        Returns:
-            Valid action (either proposed action or continue current direction)
-        """
-        # Map of opposite directions
         opposite = {0: 2, 1: 3, 2: 0, 3: 1}
-        
-        # If trying to go opposite direction, continue current direction instead
         if action == opposite.get(current_dir):
             return current_dir
-        
         return action
     
+    def _get_observation(self):
+        if self.use_features:
+            return extract_features(
+                snake_engine.worldMap,
+                snake_engine.bodyElements,
+                snake_engine.powerUps,
+                snake_engine.dir,
+                self.dim
+            )
+        else:
+            return snake_engine.worldMap.copy()
+    
     def step(self, action: int):
-        """
-        Execute one time step within the environment.
-        
-        Args:
-            action: Action to take (0=up, 1=right, 2=down, 3=left)
-            
-        Returns:
-            observation: Current state of the game board
-            reward: Reward for this step
-            terminated: Whether episode ended due to game over
-            truncated: Whether episode ended due to time limit
-            info: Additional information dictionary
-        """
         if not self._first_reset_done:
             raise RuntimeError("Must call reset() before step()")
         
         self.step_count += 1
         
         try:
-            # Validate action (prevent 180-degree turns)
             validated_action = self._validate_action(action, snake_engine.dir)
+            prev_length = len(snake_engine.bodyElements)
             
-            # Execute step in snake engine
-            observation, reward, terminated, info = snake_engine.step(action=validated_action)
+            _, _, terminated, info = snake_engine.step(action=validated_action)
             
-            # Update tracking
+            ate_powerup = len(snake_engine.bodyElements) > prev_length
+            
+            reward = self.reward_shaper.calculate(
+                worldMap=snake_engine.worldMap,
+                bodyElements=snake_engine.bodyElements,
+                powerUps=snake_engine.powerUps,
+                ate_powerup=ate_powerup,
+                collision=terminated
+            )
+            
+            observation = self._get_observation()
             self.total_reward += reward
-            
-            # Check for truncation (episode too long)
             truncated = self.step_count >= self.max_steps
             
-            # Track snake growth
             current_length = len(snake_engine.bodyElements)
             if current_length > self.last_snake_length:
                 self.powerups_collected += 1
-                info['powerup_collected'] = True
-            else:
-                info['powerup_collected'] = False
             self.last_snake_length = current_length
             
-            # Add additional info
             info.update({
                 'episode': self.episode_count,
                 'step': self.step_count,
@@ -131,79 +214,51 @@ class SnakeEnv(gym.Env):
                 'snake_length': current_length,
                 'powerups_collected': self.powerups_collected,
                 'action_taken': validated_action,
-                'action_requested': action,
-                'action_was_invalid': validated_action != action
             })
             
-            # If episode ended, log results
             if terminated or truncated:
-                if self.episode_count % 200 == 0:
-                    end_reason = "time limit" if truncated else "collision"
-                    print(f"🏁 Episode {self.episode_count} ended ({end_reason})")
-                    print(f"   Steps: {self.step_count}")
-                    print(f"   Total Reward: {self.total_reward:.2f}")
-                    print(f"   Final Snake Length: {current_length}")
-                    print(f"   PowerUps Collected: {self.powerups_collected}")
+                if self.episode_count % 100 == 0:
+                    end_reason = "time" if truncated else "collision"
+                    print(f"Ep {self.episode_count} ended ({end_reason}) | "
+                          f"Steps: {self.step_count} | Reward: {self.total_reward:.2f} | "
+                          f"Length: {current_length} | PowerUps: {self.powerups_collected}")
             
-            # Spawn new powerup if needed (and game not over)
             if not terminated and len(snake_engine.powerUps) == 0:
                 snake_engine.spawnPowerUp()
             
             return observation, reward, terminated, truncated, info
             
         except Exception as e:
-            print(f"❌ Error in step: {e}")
+            print(f"Error in step: {e}")
             import traceback
             traceback.print_exc()
             
-            # Return safe defaults on error
             terminated = True
             truncated = False
-            observation = np.zeros((self.dim, self.dim), dtype=np.int8)
-            reward = snake_engine.lostReward
+            observation = self._get_observation()
+            reward = -10.0
             info = {'error': str(e), 'episode': self.episode_count}
             
             return observation, reward, terminated, truncated, info
 
     def reset(self, seed=None, options=None):
-        """
-        Reset the environment to initial state.
-        
-        Args:
-            seed: Random seed for reproducibility
-            options: Additional options (unused)
-            
-        Returns:
-            observation: Initial state of the game board
-            info: Additional information dictionary
-        """
-        # Handle seeding
         if seed is not None:
             super().reset(seed=seed)
             np.random.seed(seed)
         
-        # Increment episode counter
         self.episode_count += 1
         self.step_count = 0
         self.total_reward = 0
         self.powerups_collected = 0
-        
-        if self.episode_count % 200 == 0:  # Don't print on first reset
-            print(f"\n{'='*60}")
-            print(f"🔄 Starting Episode {self.episode_count}")
-            print(f"{'='*60}")
+        self.reward_shaper.reset()
         
         try:
-            # Reset the snake engine
             snake_engine.resetGame()
+            snake_engine.initGame()
             
-            # Initialize new game
-            observation = snake_engine.initGame()
-            
-            # Track initial snake length
             self.last_snake_length = len(snake_engine.bodyElements)
+            observation = self._get_observation()
             
-            # Build info dict
             info = {
                 "episode": self.episode_count,
                 "snake_length": self.last_snake_length,
@@ -212,33 +267,19 @@ class SnakeEnv(gym.Env):
             
             self._first_reset_done = True
             
-            if self.episode_count % 200 == 0 and self.episode_count > 1:
-                
-                print("✓ Episode initialized")
-                print(f"   Snake length: {self.last_snake_length}")
-                print(f"   PowerUps: {len(snake_engine.powerUps)}")
-                print(f"{'='*60}\n")
-            
             return observation, info
             
         except Exception as e:
-            print(f"❌ Error during reset: {e}")
+            print(f"Error during reset: {e}")
             import traceback
             traceback.print_exc()
             
-            # Return safe defaults
-            observation = np.zeros((self.dim, self.dim), dtype=np.int8)
+            observation = self._get_observation()
             info = {"error": str(e), "episode": self.episode_count}
             
             return observation, info
     
     def render(self):
-        """
-        Render the environment.
-        
-        For 'human' mode, prints ASCII representation.
-        For 'rgb_array' mode, returns RGB array.
-        """
         if self.render_mode == "human":
             self._render_ascii()
         elif self.render_mode == "rgb_array":
@@ -246,13 +287,7 @@ class SnakeEnv(gym.Env):
         return None
     
     def _render_ascii(self):
-        """Print ASCII representation of the game state."""
-        symbols = {
-            0: '·',  # Empty
-            1: '○',  # Body
-            2: '●',  # Head
-            3: '★'   # PowerUp
-        }
+        symbols = {0: '·', 1: '○', 2: '●', 3: '★'}
         
         print("\n┌" + "─" * (self.dim * 2) + "┐")
         for row in snake_engine.worldMap:
@@ -263,24 +298,17 @@ class SnakeEnv(gym.Env):
         print("└" + "─" * (self.dim * 2) + "┘")
         
         head = snake_engine.getHead()
-        print(f"Snake Length: {len(snake_engine.bodyElements)} | "
+        print(f"Length: {len(snake_engine.bodyElements)} | "
               f"Head: ({head.x}, {head.y}) | "
               f"PowerUps: {len(snake_engine.powerUps)} | "
               f"Step: {self.step_count}")
     
     def _render_rgb(self) -> np.ndarray:
-        """
-        Convert game state to RGB image.
-        
-        Returns:
-            RGB array of shape (dim, dim, 3)
-        """
-        # Define colors (RGB)
         colors = {
-            0: [255, 255, 255],  # Empty - white
-            1: [0, 255, 0],      # Body - green
-            2: [0, 128, 0],      # Head - dark green
-            3: [255, 0, 0]       # PowerUp - red
+            0: [255, 255, 255],
+            1: [0, 255, 0],
+            2: [0, 128, 0],
+            3: [255, 0, 0]
         }
         
         rgb_array = np.zeros((self.dim, self.dim, 3), dtype=np.uint8)
@@ -293,6 +321,5 @@ class SnakeEnv(gym.Env):
         return rgb_array
     
     def close(self):
-        """Clean up resources."""
         snake_engine.resetGame()
         self._first_reset_done = False

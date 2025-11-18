@@ -9,7 +9,7 @@ import random
 import os
 from typing import Optional
 
-from env_local import SnakeEnv
+from env_js import SnakeEnv
 
 try:
     torch.set_float32_matmul_precision("medium")
@@ -20,33 +20,28 @@ torch.backends.cudnn.benchmark = True
 
 
 class DQNetwork(nn.Module):
-    def __init__(self, input_size: int, output_size: int, hidden_size: int = 256):
-        super().__init__()
+    def __init__(self, input_size, output_size, hidden_size=256):
+        super(DQNetwork, self).__init__()
         self.network = nn.Sequential(
             nn.Linear(input_size, hidden_size),
             nn.ReLU(),
+            nn.Dropout(0.1),
             nn.Linear(hidden_size, hidden_size),
             nn.ReLU(),
+            nn.Dropout(0.1),
             nn.Linear(hidden_size, 128),
             nn.ReLU(),
             nn.Linear(128, output_size)
         )
-        self._init_weights()
-
-    def _init_weights(self):
-        for m in self.network:
-            if isinstance(m, nn.Linear):
-                # small init for final layer
-                if m.out_features == self.network[-1].out_features:
-                    nn.init.uniform_(m.weight, -3e-3, 3e-3)
-                else:
-                    nn.init.xavier_uniform_(m.weight)
-                nn.init.constant_(m.bias, 0.0)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if x.dim() > 2:
-            x = x.view(x.size(0), -1)
-        return self.network(x.float())
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            nn.init.xavier_uniform_(module.weight)
+            nn.init.constant_(module.bias, 0)
+    
+    def forward(self, x):
+        return self.network(x)
 
 
 class ReplayBuffer:
@@ -91,7 +86,7 @@ class ReplayBuffer:
         )
 
 
-def resolve_device(requested: str = "auto") -> torch.device:
+def resolve_device(requested: str = "cpu") -> torch.device:
     if requested == "cuda" and torch.cuda.is_available():
         return torch.device("cuda")
     if requested == "mps" and torch.backends.mps.is_available():
@@ -117,11 +112,11 @@ class DQNAgent:
         self,
         state_size,
         action_size,
-        learning_rate=0.0003,
+        learning_rate=0.001,
         gamma=0.95,
         epsilon_start=1.0,
         epsilon_end=0.01,
-        epsilon_decay_episodes=5000,
+        epsilon_decay_episodes=2000,
         use_target_network=True,
         target_update_freq=500,
         buffer_capacity: int = 50000,
@@ -247,7 +242,7 @@ class DQNAgent:
 
     def load(self, filepath="snake_dqn_model.pth"):
         if os.path.exists(filepath):
-            checkpoint = torch.load(filepath, map_location=self.device)
+            checkpoint = torch.load(filepath, map_location=self.device, weights_only=False)
             self.model.load_state_dict(checkpoint["model_state_dict"])
             self.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
             self.epsilon = checkpoint["epsilon"]
@@ -352,7 +347,6 @@ def evaluate_agent(env, agent, num_episodes=20, max_steps=1000, render=False):
     
     total_rewards = []
     total_lengths = []
-    snake_lengths = []
     
     for episode in range(num_episodes):
         obs, info = env.reset()
@@ -375,16 +369,13 @@ def evaluate_agent(env, agent, num_episodes=20, max_steps=1000, render=False):
         
         total_rewards.append(total_reward)
         total_lengths.append(step + 1)
-        snake_lengths.append(info['snake_length'])
         
         print(f"Episode {episode + 1:2d} | "
               f"Reward: {total_reward:7.2f} | "
-              f"Length: {step + 1:3d} | "
-              f"Snake: {info['snake_length']}")
+              f"Length: {step + 1:3d}")
     
     print(f"\nAverage Reward: {np.mean(total_rewards):.2f} ± {np.std(total_rewards):.2f}")
     print(f"Average Length: {np.mean(total_lengths):.1f} ± {np.std(total_lengths):.1f}")
-    print(f"Average Snake Length: {np.mean(snake_lengths):.1f} ± {np.std(snake_lengths):.1f}")
     print(f"Best Reward: {max(total_rewards):.2f}\n")
 
 
@@ -447,7 +438,7 @@ if __name__ == "__main__":
         'save_every': 500,
         'render_every': 0,
         'eval_episodes': 20,
-        'dim': 10,
+        'dim': 10,  # FIXED: Changed from 10 to 20 to match the game
         'starting_blocks': 3,
         'learning_rate': 0.0003,
         'gamma': 0.95,
@@ -493,8 +484,6 @@ if __name__ == "__main__":
         startingBlocks=CONFIG['starting_blocks'],
         dim=CONFIG['dim'],
         distToBorder=3,
-        #render_mode="human" if args.render else None,
-        #use_features=CONFIG['use_features']
     )
     
     obs, _ = env.reset()

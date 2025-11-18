@@ -42,14 +42,12 @@ const pixels = imageData.data;
 
 const sendWorld = (prefix: string = "observation_space") => {
     if (websocket.readyState === WebSocket.OPEN) {
-        console.log("→ Sending observation");
         websocket.send(prefix + JSON.stringify(worldMap));
     }
 };
 
 const sendReward = (reward: number, prefix: string = "reward") => {
     if (websocket.readyState === WebSocket.OPEN) {
-        console.log("→ Sending reward:", reward);
         websocket.send(prefix + reward);
     }
 };
@@ -68,20 +66,12 @@ websocket.addEventListener("message", async (event: MessageEvent) => {
         return;
     }
     
-    console.log("← Received:", msgStr);
-    
     // Handle reset command
     if (msgStr === "reset") {
         console.log("🔄 Received reset command");
         isResetting = true;
-        gameOver = true; // Stop current game
-        blockExecution = false; // Unblock to exit wait loop
-        
-        // Wait a bit for game loop to exit
-        await sleep(100);
-        
-        // Reset and start new game
-        resetGame();
+        gameOver = true;
+        blockExecution = false;
         return;
     }
     
@@ -91,18 +81,14 @@ websocket.addEventListener("message", async (event: MessageEvent) => {
         const parsedAction = Number(actionValue);
 
         if (Number.isInteger(parsedAction) && [0, 1, 2, 3].includes(parsedAction)) {
-            // Prevent 180-degree turns (opposite direction)
             const oppositeDir = (oldDir + 2) % 4;
             if (parsedAction === oppositeDir) {
-                console.log("⚠ Ignoring 180-degree turn");
                 dir = oldDir;
-                reward += -0.5
+                reward += -0.5;
             } else {
                 dir = parsedAction;
             }
             blockExecution = false;
-        } else {
-            console.error("Invalid action:", actionValue);
         }
     }
 });
@@ -154,10 +140,10 @@ function sleep(ms: number) {
 }
 
 const modCoordToDir = (x: number, y: number, dir: number): [number, number] => {
-    if (dir === 0) return [x, y - 1];  // up
-    if (dir === 1) return [x + 1, y];  // right
-    if (dir === 2) return [x, y + 1];  // down
-    if (dir === 3) return [x - 1, y];  // left
+    if (dir === 0) return [x, y - 1];
+    if (dir === 1) return [x + 1, y];
+    if (dir === 2) return [x, y + 1];
+    if (dir === 3) return [x - 1, y];
     throw new Error("invalid dir");
 };
 
@@ -192,8 +178,8 @@ const newPowerUp = () => {
 
 interface Point { x: number; y: number; }
 
-const resetGame = async () => {
-    console.log("🔄 Resetting game state...");
+const resetGame = () => {
+    //console.log("🔄 Resetting game state...");
     
     // Clear world map
     for (let y = 0; y < blocks_row; y++) {
@@ -213,18 +199,7 @@ const resetGame = async () => {
     setWholeCanvas([0, 0, 0]);
     canvas_obj.putImageData(imageData, 0, 0);
     
-    // Small delay to ensure state is clean
-    await sleep(100);
-    
-    // Restart game
-    const frameDelay = 20;
-    const startBlocks = 3;
-    const snakeColor = [50, 200, 120];
-    const powerUpColor = [255, 200, 120];
-    const distToBorder = 4;
-    
-    console.log("✓ Starting new game...");
-    main(startBlocks, snakeColor, snakeColor, powerUpColor, distToBorder, frameDelay);
+    //console.log("✓ Game state reset complete");
 };
 
 const main = async (
@@ -233,14 +208,14 @@ const main = async (
     bodyColor: number[] = [50, 100, 250],
     powerUpColor: number[] = [255, 100, 250],
     distToBorder: number = 4,
-    msBetweenFrames: number = 200
+    msBetweenFrames: number = 5
 ) => {
     if (gameOver && !isResetting) {
-        console.log("⚠ Game already over, ignoring main() call");
+        console.log("⚠️ Game already over, ignoring main() call");
         return;
     }
     
-    console.log("🎮 Initializing game...");
+    //console.log("🎮 Initializing game...");
     
     const randX = Math.floor(Math.random() * (blocks_row - 2 * distToBorder)) + distToBorder;
     const randY = Math.floor(Math.random() * (blocks_row - 2 * distToBorder)) + distToBorder;
@@ -263,24 +238,27 @@ const main = async (
     renderWorldMap(headColor, bodyColor, powerUpColor);
     canvas_obj.putImageData(imageData, 0, 0);
     
-    await sleep(msBetweenFrames);
-    
-    // Send initial state AFTER rendering
-    console.log("📤 Sending initial state...");
+    // CRITICAL: Send initial state immediately without delay
+    //console.log("📤 Sending initial state...");
     sendReward(0);
     sendWorld();
     
-    console.log("⏳ Waiting for first action...");
+    // Small frame delay only if specified
+    if (msBetweenFrames > 0) {
+        await sleep(msBetweenFrames);
+    }
+    
+    //console.log("⏳ Waiting for first action...");
 
     // Wait for first action
     while (blockExecution && !gameOver) {
-        await sleep(10);
+        await sleep(5);  // Reduced from 10ms to 5ms for faster response
     }
 
     // Main game loop
-    console.log("▶️ Starting game loop");
+    //console.log("▶️ Starting game loop");
     while (!gameOver) {
-        reward = 0.01;  // Small positive reward for staying alive
+        reward = 0.1;
         let atePowerUp = false;
         const head = snake[0];
         
@@ -288,10 +266,9 @@ const main = async (
         
         let [newX, newY] = modCoordToDir(head.x, head.y, dir);
 
-        // Boundary check - game over
+        // Boundary check
         if (newX < 0 || newX >= blocks_row || newY < 0 || newY >= blocks_row) {
             reward = -1000;
-            console.log("💥 Hit wall at", newX, newY);
             gameOver = true;
             
             sendReward(reward);
@@ -299,10 +276,9 @@ const main = async (
             break;
         }
 
-        // Body collision check - game over
+        // Body collision check
         if (worldMap[newY][newX] === 1) {
-            reward = -10;
-            console.log("💥 Hit body at", newX, newY);
+            reward = -800;
             gameOver = true;
             
             sendReward(reward);
@@ -312,9 +288,8 @@ const main = async (
 
         // Check for power-up
         if (newX === PowerUpX && newY === PowerUpY) {
-            reward += 10;
+            reward += 30;
             atePowerUp = true;
-            console.log("🎉 Ate power-up!");
             newPowerUp();
         }
 
@@ -327,13 +302,12 @@ const main = async (
             const tail = snake.pop()!;
             worldMap[tail.y][tail.x] = 0;
 
-            // Incentivize moving towards power-up (Manhattan distance)
             const dx = Math.abs(PowerUpX - newX);
             const dy = Math.abs(PowerUpY - newY);
             const distance = dx + dy;
             
             if (distance > 0) {
-                reward += 0.1 / distance;
+                reward += 0.2 / distance;
             } else {
                 reward += 0.1;
             }
@@ -346,12 +320,14 @@ const main = async (
         renderWorldMap(headColor, bodyColor, powerUpColor);
         canvas_obj.putImageData(imageData, 0, 0);
 
-        await sleep(msBetweenFrames);
+        if (msBetweenFrames > 0) {
+            await sleep(msBetweenFrames);
+        }
         
         // Wait for next action
         blockExecution = true;
         while (blockExecution && !gameOver) {
-            await sleep(10);
+            await sleep(5);  // Reduced from 10ms to 5ms
         }
     }
 
@@ -359,7 +335,19 @@ const main = async (
     renderWorldMap(headColor, bodyColor, powerUpColor);
     canvas_obj.putImageData(imageData, 0, 0);
     
-    console.log("🏁 Game ended. Waiting for reset command...");
+    //console.log("🏁 Game ended. Waiting for reset command...");
+    
+    // Wait for reset command
+    while (!isResetting) {
+        await sleep(50);
+    }
+    
+    // Reset and immediately start new game - NO DELAY
+    resetGame();
+    
+    // Recursively start new game immediately
+    //console.log("🚀 Starting new episode immediately...");
+    main(startBlockCount, headColor, bodyColor, powerUpColor, distToBorder, msBetweenFrames);
 };
 
 // Wait for WebSocket to be ready before starting the game
@@ -371,13 +359,16 @@ const waitForWebSocket = async () => {
     console.log("✓ WebSocket ready");
 };
 
-const frameDelay = 0;
+// Configuration - adjust frameDelay to control game speed
+// 0 = fastest, 100 = slower (good for watching), 20 = balanced
+const frameDelay = 0;  // Change this to slow down visualization
 const startBlocks = 3;
 const snakeColor = [50, 200, 120];
 const powerUpColor = [255, 200, 120];
 const distToBorder = 4;
 
 console.log("🐍 Snake RL Game Starting...");
+console.log(`⚙️  Frame delay: ${frameDelay}ms`);
 waitForWebSocket().then(() => {
     console.log("🚀 Launching initial game");
     main(startBlocks, snakeColor, snakeColor, powerUpColor, distToBorder, frameDelay);

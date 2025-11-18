@@ -11,7 +11,7 @@ class SnakeEnv(gym.Env):
     
     metadata = {"render_modes": ["human"], "render_fps": 30}
 
-    def __init__(self, startingBlocks: int = 3, dim: int = 20, distToBorder: int = 3, 
+    def __init__(self, startingBlocks: int = 3, dim: int = 10, distToBorder: int = 3, 
                  ws_url: str = "ws://localhost:3030"):
         super().__init__()
         self.startingBlocks = startingBlocks
@@ -46,13 +46,13 @@ class SnakeEnv(gym.Env):
                 
                 return
             except Exception as e:
-                print(f"⚠ Connection attempt {attempt + 1}/{max_retries} failed: {e}")
+                print(f"⚠️ Connection attempt {attempt + 1}/{max_retries} failed: {e}")
                 if attempt < max_retries - 1:
                     time.sleep(1)
                 else:
                     raise ConnectionError(f"Failed to connect after {max_retries} attempts")
     
-    def _recv_message(self, timeout=10.0):
+    def _recv_message(self, timeout=3.0):  # Reduced from 10s to 3s
         """Receive and decode message properly"""
         try:
             msg = self.websocket.recv(timeout=timeout)
@@ -60,10 +60,10 @@ class SnakeEnv(gym.Env):
                 return msg.decode('utf-8')
             return str(msg)
         except TimeoutError:
-            print(f"⚠ Timeout waiting for message (waited {timeout}s)")
+            print(f"⚠️ Timeout waiting for message (waited {timeout}s)")
             raise
         except Exception as e:
-            print(f"⚠ Error receiving message: {e}")
+            print(f"⚠️ Error receiving message: {e}")
             raise
     
     def receiveReward(self, prefix="reward"):
@@ -79,17 +79,16 @@ class SnakeEnv(gym.Env):
                 if msg_str.startswith(prefix):
                     reward_str = msg_str.removeprefix(prefix)
                     reward = float(reward_str)
-                    print(f"← Reward: {reward}")
                     return reward
                 else:
                     print(f"⊘ Skipping non-reward message: {msg_str[:50]}")
             
         except ValueError as e:
-            print(f"⚠ Error parsing reward: {e}")
+            print(f"⚠️ Error parsing reward: {e}")
             return 0.0
         except Exception as e:
-            print(f"⚠ Error receiving reward: {e}")
-            raise  # Re-raise to handle in caller
+            print(f"⚠️ Error receiving reward: {e}")
+            raise
     
     def receiveObservation(self, prefix="observation_space"):
         """Receive and parse observation from websocket"""
@@ -112,24 +111,21 @@ class SnakeEnv(gym.Env):
                     if observation.shape != (self.dim, self.dim):
                         observation = observation.reshape((self.dim, self.dim))
                     
-                    print(f"← Observation (shape: {observation.shape})")
                     return observation
                 else:
                     print(f"⊘ Skipping non-observation: {msg_str[:50]}")
                     
         except Exception as e:
-            print(f"⚠ Error receiving observation: {e}")
-            raise  # Re-raise to handle in caller
+            print(f"⚠️ Error receiving observation: {e}")
+            raise
     
     def sendAction(self, action: int, prefix="action"):
         """Send action to websocket"""
         try:
             action_msg = f"{prefix}{str(action)}"
             self.websocket.send(action_msg)
-            action_names = ['↑up', '→right', '↓down', '←left']
-            print(f"→ Action: {action} ({action_names[action]})")
         except Exception as e:
-            print(f"⚠ Error sending action: {e}")
+            print(f"⚠️ Error sending action: {e}")
             raise
         
     def step(self, action: int):
@@ -149,9 +145,6 @@ class SnakeEnv(gym.Env):
             truncated = False
             info = {"step": self.step_count, "episode": self.episode_count}
             
-            if terminated:
-                print(f"🏁 Episode terminated at step {self.step_count}")
-            
             return observation, reward, terminated, truncated, info
             
         except Exception as e:
@@ -169,36 +162,23 @@ class SnakeEnv(gym.Env):
         self.episode_count += 1
         self.step_count = 0
         
-        print(f"\n{'='*60}")
-        print(f"🔄 Resetting Environment (Episode {self.episode_count})")
-        print(f"{'='*60}")
-        
         try:
             if self._first_reset_done:
                 # Subsequent resets - send reset command
-                print("→ Sending reset command")
                 self.websocket.send("reset")
                 
-                # Wait for game to process reset and send initial state
-                print("⏳ Waiting for game to reset...")
-                time.sleep(1.0)  # Give game time to reset
+                # Game will immediately reset and send state - NO sleep needed!
+                # Just wait for the messages to arrive
                 
             else:
                 # First reset - game already initialized, just consume state
                 self._first_reset_done = True
-                print("🎮 First episode - consuming initial state")
             
-            # Receive initial state
-            print("⏳ Receiving initial state...")
+            # Receive initial state (game sends immediately after reset)
             reward = self.receiveReward()
             observation = self.receiveObservation()
             
             info = {"episode": self.episode_count}
-            
-            print(f"✓ Reset complete!")
-            print(f"   Observation shape: {observation.shape}")
-            print(f"   Initial reward: {reward}")
-            print(f"{'='*60}\n")
             
             return observation, info
             
@@ -216,12 +196,11 @@ class SnakeEnv(gym.Env):
                     except:
                         pass
                 
-                time.sleep(1)
+                time.sleep(0.5)  # Reduced from 1s
                 self._connect()
                 
                 # Game should auto-start, try to get initial state
-                print("⏳ Waiting for initial state after reconnect...")
-                time.sleep(2)
+                time.sleep(1)  # Reduced from 2s
                 
                 reward = self.receiveReward()
                 observation = self.receiveObservation()
@@ -231,7 +210,7 @@ class SnakeEnv(gym.Env):
                 
             except Exception as e2:
                 print(f"❌ Reconnection failed: {e2}")
-                print("⚠ Returning zero observation")
+                print("⚠️ Returning zero observation")
                 return np.zeros((self.dim, self.dim), dtype=np.int8), {}
     
     def close(self):
@@ -242,7 +221,7 @@ class SnakeEnv(gym.Env):
                 self.websocket.close()
                 print("✓ Websocket connection closed")
             except Exception as e:
-                print(f"⚠ Error closing websocket: {e}")
+                print(f"⚠️ Error closing websocket: {e}")
         super().close()
     
     def render(self):

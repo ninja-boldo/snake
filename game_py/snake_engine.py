@@ -4,7 +4,6 @@ import numpy as np
 from dataclasses import dataclass
 from typing import Tuple, List
 
-#declare beginning variables
 dimensions = 10
 distToBorder = 3
 startBlocks = 3
@@ -20,8 +19,8 @@ atePowerUp = False
 errorInLine = -1
 
 lostReward = -1000
-startReward = 0.01
-rewardPowerUp = 15
+aliveReward = 0.01
+rewardPowerUp = 50
 reward = 0
 
 
@@ -61,7 +60,6 @@ def wipeWorldMap() -> np.ndarray:
     return np.zeros((dimensions, dimensions), dtype=np.int8)
     
 def chooseDir(disallowed: list[int]) -> int:
-    #0 is up, 1 is right, 2 is down and 3 is left
     directions = [0, 1, 2, 3]
     for disallow in disallowed:
         directions.remove(disallow)
@@ -73,7 +71,6 @@ def chooseDir(disallowed: list[int]) -> int:
     return random.choice(directions)
 
 def addBlock(x: int, y: int, elementType: int) -> None:
-    #elementype = 1 is a normal body, 2 is the head of the snake, 0 is void, 3 is a PowerUp
     global addXBlocks
     if elementType == 3:
         worldMap[y][x] = 3
@@ -140,7 +137,6 @@ def getHead() -> BodyElement:
         return BodyElement(-1, -1, isHead=False)
 
 def syncMapWithList():
-    """Sync worldMap to match the bodyElements and powerUps lists"""
     global worldMap, bodyElements
     
     wipeWorldMapInplace()
@@ -155,28 +151,23 @@ def syncMapWithList():
         worldMap[powerUp.y][powerUp.x] = 3
 
 def syncListWithMap(map: np.ndarray):
-    """Sync bodyElements and powerUps lists to match a given map state"""
     global worldMap, bodyElements, powerUps
     
-    # Clear existing state
     bodyElements = []
     powerUps = []
     wipeWorldMapInplace()
     
-    # Reconstruct from map
-    # First pass: find and add head (must be first in list)
     for idY, row in enumerate(map):
         for idX, value in enumerate(row):
-            if value == 2:  # Head
+            if value == 2:
                 addBlock(x=idX, y=idY, elementType=2)
                 break
     
-    # Second pass: add body and powerups
     for idY, row in enumerate(map):
         for idX, value in enumerate(row):
-            if value == 1:  # Body
+            if value == 1:
                 addBlock(x=idX, y=idY, elementType=1)
-            elif value == 3:  # PowerUp
+            elif value == 3:
                 addBlock(x=idX, y=idY, elementType=3)
             
 def moveSnake(dir: int) -> None:
@@ -186,14 +177,11 @@ def moveSnake(dir: int) -> None:
     priorCoord = Coordinates(head.x, head.y)
     newHeadX, newHeadY = genNewCoord(head.x, head.y, dir=dir)
     
-    # Check for powerup BEFORE moving
     if worldMap[newHeadY][newHeadX] == 3:
         reward += rewardPowerUp
         atePowerUp = True
-        # Remove the eaten powerup
         powerUps[:] = [p for p in powerUps if not (p.x == newHeadX and p.y == newHeadY)]
     
-    # Update head position
     bodyElements[0].x, bodyElements[0].y = newHeadX, newHeadY
         
     lengthBodyElements = len(bodyElements)
@@ -235,7 +223,6 @@ def collisionWithBody(dir:int) -> bool:
     x, y = genNewCoord(head.x, head.y, dir=dir)
     newCoord = Coordinates(x, y)
     
-    # Check bounds
     if not (0 <= newCoord.x < dimensions and 0 <= newCoord.y < dimensions):
         return True
     
@@ -245,16 +232,13 @@ def collisionWithBody(dir:int) -> bool:
         return True
 
 def modDir() -> int:
-    """Override this function for RL agent integration"""
     global dir
     raise NotImplementedError("modDir() must be implemented by RL agent")
 
 def sendReward(reward: float) -> None:
-    """Override this function to send rewards to RL agent"""
     raise NotImplementedError("sendReward() must be implemented by RL agent")
 
 def resetGame():
-    """Reset game state for new episode"""
     global lostGame, borderCollsion, bodyCollision, dir, atePowerUp, reward
     global bodyElements, powerUps, worldMap
     
@@ -269,13 +253,12 @@ def resetGame():
     wipeWorldMapInplace()
 
 def doGame():
-    """Main game loop - not typically used for RL training"""
     global lostGame, borderCollsion, bodyCollision, dir, atePowerUp
     global dimensions, distToBorder, startBlocks, worldMap, addXBlocks, reward
-    global startReward, lostReward
+    global aliveReward, lostReward
     
     while not lostGame:
-        reward = startReward
+        reward = aliveReward
         wipeWorldMapInplace()
         spawnBody()
         spawnPowerUp(addBlocks=addXBlocks)
@@ -293,26 +276,33 @@ def doGame():
         
         dir = modDir()
 
+def getDistPowerUp():
+    '''
+    calc and return snake's manhattan distance to closest powerup
+    '''
+    head = getHead()
+    dist = dimensions**2
+    for power in powerUps:
+        dist = min(dist, ( abs(power.x - head.x) + abs(power.y - head.y)))
+    return dist
+
+def normalizeSigmoid(x):
+ return 1/(1 + np.exp(-x))
+
+def getDistBorder():
+    head = getHead()
+    distX = min(( head.x, dimensions -1 - head.x))
+    distY = min(( head.y, dimensions -1 - head.y))
+    
+    return normalizeSigmoid(distX + distY)
+    
 def step(action: int) -> Tuple[np.ndarray, float, bool, dict]:
-    """
-    RL-style step function for training.
-    
-    Args:
-        action: Direction to move (0=up, 1=right, 2=down, 3=left)
-    
-    Returns:
-        observation: Current worldMap state
-        reward: Reward for this step
-        done: Whether episode is finished
-        info: Additional information
-    """
     global lostGame, borderCollsion, bodyCollision, dir, reward
-    global startReward, lostReward, worldMap
+    global aliveReward, lostReward, worldMap
     
     dir = action
-    reward = startReward
+    reward = aliveReward
     
-    # Check collisions BEFORE moving
     borderCollsion = collisionWithBorder(dir=dir)
     bodyCollision = collisionWithBody(dir=dir)
     
@@ -321,10 +311,11 @@ def step(action: int) -> Tuple[np.ndarray, float, bool, dict]:
         lostGame = True
         done = True
         reward += lostReward
-        
     else:
-        # Only move if no collision
         moveSnake(dir=dir)
+        
+    reward += (1/getDistPowerUp()) * 3
+    reward += getDistBorder()
     
     info = {
         'border_collision': borderCollsion,
@@ -335,11 +326,9 @@ def step(action: int) -> Tuple[np.ndarray, float, bool, dict]:
     return worldMap.copy(), reward, done, info
 
 def getState() -> np.ndarray:
-    """Get current game state as numpy array"""
     return worldMap.copy()
 
 def initGame() -> np.ndarray:
-    """Initialize a new game and return starting state"""
     resetGame()
     spawnBody()
     spawnPowerUp(addBlocks=addXBlocks)
