@@ -19,8 +19,8 @@ atePowerUp = False
 errorInLine = -1
 
 lostReward = -1000
-aliveReward = 0.01
-rewardPowerUp = 50
+aliveReward = -0.001 # incentevize moving towards a reward and not getting stuck
+rewardPowerUp = 70
 reward = 0
 
 
